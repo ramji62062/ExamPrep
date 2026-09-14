@@ -409,6 +409,15 @@ app.post("/api/groups/:id/join", auth, (req, res) => {
   catch (_e) { res.status(400).json({ error: "Already a member or group does not exist" }); }
 });
 app.post("/api/groups/:id/leave", auth, (req, res) => { db.prepare("DELETE FROM group_members WHERE group_id=? AND user_id=?").run(req.params.id, req.user.id); res.json({ ok: true }); });
+app.delete("/api/groups/:id", auth, (req, res) => {
+  const group = db.prepare("SELECT id,owner_id FROM groups WHERE id=?").get(req.params.id);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (group.owner_id !== req.user.id) return res.status(403).json({ error: "Only the group owner can delete it" });
+  const storedFiles = db.prepare("SELECT stored_name FROM files WHERE group_id=?").all(group.id);
+  db.prepare("DELETE FROM groups WHERE id=?").run(group.id);
+  storedFiles.forEach(file => fs.rm(path.join(uploadDir, file.stored_name), () => {}));
+  res.json({ ok: true });
+});
 app.get("/api/groups/:id", auth, member, (req, res) => {
   const group = db.prepare("SELECT g.*,u.name owner_name FROM groups g JOIN users u ON u.id=g.owner_id WHERE g.id=?").get(req.params.id);
   if (!group) return res.status(404).json({ error: "Group not found" });
