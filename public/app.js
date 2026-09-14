@@ -85,7 +85,7 @@ function renderSubjects() {
   ["#timer-subject","#log-subject"].forEach(selector => { const el = $(selector); if (!el) return; const first = el.options[0].outerHTML; el.innerHTML = first + state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join(""); });
 }
 function renderLogs() {
-  const html = state.logs.slice(0, 5).map(l => `<div class="activity-row"><span class="activity-icon">◷</span><div><b>${l.minutes} min · ${esc(l.subject_name || "General study")}</b><small>${esc(l.note || "Focused study")} · ${fmtDate(l.logged_at)}</small></div></div>`).join("");
+  const html = state.logs.slice(0, 5).map(l => `<div class="activity-row"><span class="activity-icon">◷</span><div class="activity-copy"><b>${l.minutes} min · ${esc(l.subject_name || "General study")}</b><small>${esc(l.note || "Focused study")} · ${fmtDate(l.logged_at)}</small></div><button type="button" class="delete-log" data-delete-log="${l.id}" aria-label="Delete study log">×</button></div>`).join("");
   $("#log-preview").className = html ? "activity-list" : "empty-state"; $("#log-preview").innerHTML = html || "Your activity will appear here.";
 }
 async function loadDashboard() {
@@ -203,6 +203,11 @@ document.addEventListener("click", async e => {
   if (toggleTask) { try { await api(`/api/tasks/${toggleTask.dataset.toggleTask}`, { method:"PATCH", body:JSON.stringify({ done:Number(toggleTask.dataset.done) }) }); loadTodos(); } catch (err) { toast(err.message, true); } }
   const deleteTask = e.target.closest("[data-delete-task]");
   if (deleteTask) { try { await api(`/api/tasks/${deleteTask.dataset.deleteTask}`, { method:"DELETE" }); loadTodos(); toast("Task removed"); } catch (err) { toast(err.message, true); } }
+  const deleteLog = e.target.closest("[data-delete-log]");
+  if (deleteLog && confirm("Delete this study log?")) {
+    try { await api(`/api/study-logs/${deleteLog.dataset.deleteLog}`, { method:"DELETE" }); await Promise.all([loadDashboard(), loadAnalytics(), loadProgress()]); toast("Study log deleted"); }
+    catch (err) { toast(err.message, true); }
+  }
   const subjectCard = e.target.closest("[data-open-subject]");
   if (subjectCard && !e.target.closest("button")) openSubjectDetail(subjectCard.dataset.openSubject);
   if (e.target.id === "back-to-syllabus") showPage("syllabus");
