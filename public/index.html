@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas — Exam Prep Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+  <section id="auth-view" class="auth-layout">
+    <div class="auth-hero">
+      <span class="eyebrow">ATLAS / EXAM PREP</span>
+      <h1>Make progress<br><em>visible.</em></h1>
+      <p>A calm, focused workspace for turning a big syllabus into small, consistent wins.</p>
+      <div class="hero-stats"><span><b>01</b> Plan</span><span><b>02</b> Focus</span><span><b>03</b> Finish</span></div>
+    </div>
+    <div class="auth-card">
+      <div class="brand-mark">✦ <span>atlas</span></div>
+      <div id="login-form">
+        <h2>Welcome back</h2><p class="muted">Pick up where you left off.</p>
+        <form data-auth="login">
+          <label>Email<input name="email" type="email" placeholder="you@example.com" required></label>
+          <label>Password<input name="password" type="password" placeholder="••••••••" required></label>
+          <button class="primary full">Sign in <span>→</span></button>
+        </form>
+        <p class="switch">New to Atlas? <button data-auth-switch="register">Create account</button></p>
+      </div>
+      <div id="register-form" class="hidden">
+        <h2>Create your workspace</h2><p class="muted">Small steps, tracked daily.</p>
+        <form data-auth="register">
+          <label>Name<input name="name" placeholder="Your name" required></label>
+          <label>Email<input name="email" type="email" placeholder="you@example.com" required></label>
+          <label>Password<input name="password" type="password" minlength="6" placeholder="6+ characters" required></label>
+          <button class="primary full">Create account <span>→</span></button>
+        </form>
+        <p class="switch">Already have an account? <button data-auth-switch="login">Sign in</button></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand-mark">✦ <span>atlas</span></div>
+      <nav>
+        <button class="nav-item active" data-page="overview"><i>⌂</i> Overview</button>
+        <button class="nav-item" data-page="syllabus"><i>▤</i> Syllabus</button>
+        <button class="nav-item" data-page="progress"><i>↗</i> Progress</button>
+        <button class="nav-item" data-page="todo"><i>✓</i> To-do</button>
+        <button class="nav-item" data-page="files"><i>▣</i> Files</button>
+        <button class="nav-item" data-page="focus"><i>◷</i> Focus timer</button>
+        <button class="nav-item" data-page="groups"><i>♧</i> Study groups</button>
+        <button class="nav-item admin-only hidden" data-page="admin"><i>⚑</i> Admin desk</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="quote"><span id="sidebar-quote">“The secret of getting ahead is getting started.”</span><small>Keep going.</small></div><button id="logout" class="logout">↪ Sign out</button></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div><span class="eyebrow" id="page-kicker">YOUR SPACE</span><h1 id="page-title">Good morning<span id="user-name"></span></h1></div><div class="top-actions"><button class="icon-btn" id="quick-log" title="Log study time">＋</button><div class="avatar" id="avatar">A</div></div></header>
+      <div id="page-overview" class="page">
+        <div class="welcome-banner"><div><span class="eyebrow">YOUR MOMENTUM</span><h2>Keep the streak alive.</h2><p id="banner-copy">Every focused minute compounds.</p></div><div class="banner-orbit">✦</div></div>
+        <div class="metric-grid"><div class="metric-card"><span class="metric-label">SYLLABUS PROGRESS</span><strong id="avg-progress">0%</strong><div class="progress"><i id="avg-progress-bar"></i></div><small id="subject-count">0 subjects</small></div><div class="metric-card accent"><span class="metric-label">TODAY</span><strong><span id="today-minutes">0</span><small> min</small></strong><small id="week-minutes">0 min this week</small></div><div class="metric-card"><span class="metric-label">NEXT EXAM</span><strong id="next-exam">—</strong><small id="countdown">Add an exam date</small></div></div>
+        <div class="content-grid"><section class="panel"><div class="panel-head"><div><span class="eyebrow">AT A GLANCE</span><h3>Your syllabus</h3></div><button class="text-btn" data-page-link="syllabus">View all →</button></div><div id="subject-preview" class="subject-list empty-state">No subjects yet. Add your first one.</div></section><section class="panel"><div class="panel-head"><div><span class="eyebrow">RECENT ACTIVITY</span><h3>Study log</h3></div><button class="text-btn" id="overview-log">＋ Log time</button></div><div id="log-preview" class="activity-list empty-state">Your activity will appear here.</div></section></div>
+      </div>
+      <div id="page-progress" class="page hidden"><div class="page-intro"><div><span class="eyebrow">YOUR MOMENTUM</span><h2>Progress, in detail</h2><p>See how your consistency is building over time.</p></div></div><div class="progress-hero panel"><div><span class="eyebrow">TODAY'S THOUGHT</span><blockquote id="daily-quote"></blockquote><small id="quote-author"></small></div><div class="quote-orbit">✦</div></div><div class="metric-grid progress-metrics"><div class="metric-card"><span class="metric-label">TODAY</span><strong id="progress-today">0 min</strong><small>Focused study time</small></div><div class="metric-card accent"><span class="metric-label">THIS WEEK</span><strong id="progress-week">0 min</strong><small>Last seven days</small></div><div class="metric-card"><span class="metric-label">ALL TIME</span><strong id="progress-all-time">0 min</strong><small>Every logged session</small></div></div><section class="panel"><div class="panel-head"><div><span class="eyebrow">DAILY BREAKDOWN</span><h3>Weekly rhythm</h3></div></div><div id="progress-bars" class="progress-bars"></div></section></div>
+      <div id="page-todo" class="page hidden"><div class="page-intro"><div><span class="eyebrow">CLEAR THE DECK</span><h2>To-do list</h2><p>Turn your next action into visible progress.</p></div></div><section class="todo-layout"><section class="panel"><form id="todo-form" class="todo-form"><input name="title" placeholder="What needs doing?" required><input name="due_date" type="date"><button class="primary">Add task</button></form><div id="todo-list" class="todo-list"></div></section><aside class="todo-tip"><span class="eyebrow">ONE THING AT A TIME</span><h3>Small actions compound.</h3><p>Choose the next clear step, finish it, and let momentum do the rest.</p></aside></section></div>
+      <div id="page-syllabus" class="page hidden"><div class="page-intro"><div><span class="eyebrow">THE BIG PICTURE</span><h2>Build your syllabus</h2><p>Break the mountain into manageable climbs.</p></div><button class="primary" id="add-subject">＋ Add subject</button></div><div id="subject-grid" class="subject-grid"></div></div>
+      <div id="page-subject-detail" class="page hidden"><div class="page-intro"><div><button class="text-btn" id="back-to-syllabus">← Back to syllabus</button><span class="eyebrow" id="detail-kicker">SUBJECT WORKSPACE</span><h2 id="detail-title">Subject</h2><p id="detail-description"></p></div><button class="primary" id="detail-add-topic">＋ Add subtopic</button></div><div class="content-grid"><section class="panel"><div class="panel-head"><div><span class="eyebrow">YOUR ROADMAP</span><h3>Topics & subtopics</h3></div><strong id="detail-progress">0%</strong></div><div class="progress"><i id="detail-progress-bar"></i></div><div id="detail-topics" class="detail-topics"></div></section><section class="panel"><div class="panel-head"><div><span class="eyebrow">FROM FILES</span><h3>Subject materials</h3></div><button class="text-btn" data-page-link="files">Open Files →</button></div><div id="detail-files" class="detail-files"></div></section></div></div>
+      <div id="page-files" class="page hidden"><div class="page-intro"><div><span class="eyebrow">YOUR LIBRARY</span><h2>Lectures & notes</h2><p>Keep every lecture, PDF, and note organized by subject and topic.</p></div></div><section class="panel"><form id="personal-file-form" class="file-upload-grid"><label>File name<input name="display_name" placeholder="Name this lecture or note"></label><label>Subject<select name="subject_id" id="file-subject" required><option value="">Choose subject</option></select></label><label>Topic<select name="topic_id" id="file-topic"><option value="">Optional topic</option></select></label><label>Video, PDF, or notes<input name="file" type="file" required></label><label>WebVTT captions (optional)<input name="captions" type="file" accept=".vtt,text/vtt"></label><button class="primary">Upload to library</button></form></section><div id="personal-files-list" class="library-grid"></div></div>
+      <div id="page-focus" class="page hidden"><div class="page-intro"><div><span class="eyebrow">DEEP WORK</span><h2>Focus timer</h2><p>Start a session when you are ready.</p></div></div><div class="focus-layout"><section class="timer-card"><div class="timer-ring"><div><span id="timer-display">00:00</span><small id="timer-status">READY TO FOCUS</small></div></div><select id="timer-subject"><option value="">Choose a subject (optional)</option></select><div class="timer-controls"><button class="primary" id="timer-start">Start session</button><button class="secondary hidden" id="timer-stop">Finish session</button></div><p class="muted tiny">Your progress is saved with a heartbeat every 15 seconds.</p></section><section class="panel analytics-panel"><div class="panel-head"><div><span class="eyebrow">STUDY ANALYTICS</span><h3 id="analytics-title">This week</h3></div><select id="analytics-range"><option value="week">Week · daily</option><option value="month">Month · daily</option><option value="year">Year · monthly</option></select></div><div id="analytics-summary" class="analytics-summary"></div><div id="bar-chart" class="bar-chart"></div><div id="subject-breakdown"></div></section></div></div>
+      <div id="page-groups" class="page hidden"><div class="page-intro"><div><span class="eyebrow">LEARN TOGETHER</span><h2>Study groups</h2><p>Shared accountability makes hard things lighter.</p></div><div><button class="secondary" id="join-code">Join with code</button> <button class="primary" id="create-group">＋ Create group</button></div></div><div id="group-grid" class="group-grid"></div><div id="group-room" class="group-room hidden"></div></div>
+      <div id="page-admin" class="page hidden"><div class="page-intro"><div><span class="eyebrow">COMMAND CENTER</span><h2>Admin desk</h2><p>Set direction, follow up, and keep the team moving.</p></div></div><div id="admin-content"></div></div>
+    </main>
+  </section>
+
+  <dialog id="subject-dialog"><form method="dialog" id="subject-form"><div class="dialog-head"><h3 id="subject-dialog-title">Add subject</h3><button type="button" class="close">×</button></div><input type="hidden" name="id"><label>Subject name<input name="name" required placeholder="e.g. Organic Chemistry"></label><label>Description<textarea name="description" placeholder="What does success look like?"></textarea></label><div class="form-row"><label>Progress (%)<input name="progress" type="number" min="0" max="100" value="0"></label><label>Status<select name="status"><option value="not-started">Not started</option><option value="in-progress">In progress</option><option value="complete">Complete</option></select></label></div><label>Exam date<input name="exam_date" type="date"></label><button class="primary full">Save subject</button></form></dialog>
+  <dialog id="log-dialog"><form method="dialog" id="log-form"><div class="dialog-head"><h3>Log study time</h3><button type="button" class="close">×</button></div><label>Minutes<input name="minutes" type="number" min="1" required placeholder="45"></label><label>Subject<select name="subject_id" id="log-subject"><option value="">General study</option></select></label><label>Note<textarea name="note" placeholder="What did you work on?"></textarea></label><button class="primary full">Add to log</button></form></dialog>
+  <dialog id="group-dialog"><form method="dialog" id="group-form"><div class="dialog-head"><h3>Create a study group</h3><button type="button" class="close">×</button></div><label>Group name<input name="name" required placeholder="e.g. Biology buddies"></label><label>Description<textarea name="description" placeholder="What are you preparing for?"></textarea></label><button class="primary full">Create group</button></form></dialog>
+  <dialog id="join-dialog"><form method="dialog" id="join-form"><div class="dialog-head"><h3>Join a study group</h3><button type="button" class="close">×</button></div><label>Invite code<input name="code" required placeholder="e.g. 7A3F21BC" maxlength="8" autocomplete="off"></label><button class="primary full">Join group</button></form></dialog>
+  <script src="/socket.io/socket.io.js"></script><script src="/app.js"></script>
+</body>
+</html>
