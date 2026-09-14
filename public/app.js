@@ -13,8 +13,11 @@ const api = async (url, options = {}) => {
 function toast(message, error = false) { const el = $("#toast"); el.textContent = message; el.style.background = error ? "#b34e40" : ""; el.classList.add("show"); setTimeout(() => el.classList.remove("show"), 2600); }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
 function showPage(name) {
+  const allowedPages = ["overview", "syllabus", "progress", "todo", "files", "focus", "groups", "admin", "subject-detail"];
+  if (!allowedPages.includes(name) || (name === "admin" && state.user?.role !== "admin")) name = "overview";
   $$(".page").forEach(p => p.classList.toggle("hidden", p.id !== `page-${name}`));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.page === name));
+  if (state.user?.id && name !== "subject-detail") localStorage.setItem(`atlas:last-page:${state.user.id}`, name);
   const labels = { overview:["YOUR SPACE","Good morning"], syllabus:["YOUR PLAN","Syllabus"], "subject-detail":["YOUR PLAN","Subject"], progress:["YOUR MOMENTUM","Progress"], todo:["CLEAR THE DECK","To-do"], files:["YOUR LIBRARY","Lectures & notes"], focus:["DEEP WORK","Focus timer"], groups:["YOUR CIRCLE","Study groups"], admin:["COMMAND CENTER","Admin desk"] };
   $("#page-kicker").textContent = labels[name][0]; $("#page-title").firstChild.textContent = labels[name][1]; $("#page-title").lastChild.textContent = name === "overview" ? `, ${state.user.name.split(" ")[0]}` : "";
   if (name === "overview") loadDashboard(); if (name === "syllabus") renderSubjects(); if (name === "progress") loadProgress(); if (name === "todo") loadTodos(); if (name === "files") loadPersonalFiles(); if (name === "focus") loadAnalytics(); if (name === "groups") loadGroups(); if (name === "admin") loadAdmin();
@@ -194,7 +197,7 @@ window.addEventListener("beforeunload", () => {
   if (!state.timer) return;
   fetch("/api/timer/close", { method:"POST", credentials:"same-origin", keepalive:true, headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id:state.timer.id, seconds:state.elapsed }) });
 });
-function showApp() { $("#auth-view").classList.add("hidden"); $("#app-view").classList.remove("hidden"); $("#user-name").textContent = `, ${state.user.name.split(" ")[0]}`; $("#avatar").textContent = state.user.name[0].toUpperCase(); $$(".admin-only").forEach(x => x.classList.toggle("hidden", state.user.role !== "admin")); rotateQuote(); clearInterval(state.quoteHandle); state.quoteHandle = setInterval(rotateQuote, 60000); showPage("overview"); }
+function showApp() { $("#auth-view").classList.add("hidden"); $("#app-view").classList.remove("hidden"); $("#user-name").textContent = `, ${state.user.name.split(" ")[0]}`; $("#avatar").textContent = state.user.name[0].toUpperCase(); $$(".admin-only").forEach(x => x.classList.toggle("hidden", state.user.role !== "admin")); rotateQuote(); clearInterval(state.quoteHandle); state.quoteHandle = setInterval(rotateQuote, 60000); const lastPage = localStorage.getItem(`atlas:last-page:${state.user.id}`); showPage(lastPage === "subject-detail" ? "overview" : (lastPage || "overview")); }
 
 document.addEventListener("click", async e => {
   const sw = e.target.closest("[data-auth-switch]"); if (sw) { $("#login-form").classList.toggle("hidden", sw.dataset.authSwitch !== "login"); $("#register-form").classList.toggle("hidden", sw.dataset.authSwitch !== "register"); }
