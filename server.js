@@ -156,12 +156,32 @@ const upload = multer({
     filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname)}`)
   })
 });
+const personalUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const userDir = path.join(uploadDir, "users", String(req.user.id));
+      fs.mkdirSync(userDir, { recursive: true });
+      cb(null, userDir);
+    },
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname)}`)
+  })
+});
 const uploadSingle = (req, res, next) => upload.single("file")(req, res, err => {
   if (err) return res.status(400).json({ error: err.message });
   next();
 });
+const personalUploadSingle = (req, res, next) => personalUpload.single("file")(req, res, err => {
+  if (err) return res.status(400).json({ error: err.message });
+  if (req.file) req.file.filename = path.relative(uploadDir, req.file.path);
+  next();
+});
 const uploadVideoFields = (req, res, next) => upload.fields([{ name: "file", maxCount: 1 }, { name: "captions", maxCount: 1 }])(req, res, err => {
   if (err) return res.status(400).json({ error: err.message });
+  next();
+});
+const personalUploadVideoFields = (req, res, next) => personalUpload.fields([{ name: "file", maxCount: 1 }, { name: "captions", maxCount: 1 }])(req, res, err => {
+  if (err) return res.status(400).json({ error: err.message });
+  for (const files of Object.values(req.files || {})) for (const file of files) file.filename = path.relative(uploadDir, file.path);
   next();
 });
 
@@ -258,7 +278,7 @@ app.delete("/api/subjects/:id/topics/:topicId", auth, (req, res) => {
   if (!result.changes) return res.status(404).json({ error: "Topic not found" });
   res.json({ ok: true });
 });
-app.post("/api/subjects/:id/notes", auth, uploadSingle, (req, res) => {
+app.post("/api/subjects/:id/notes", auth, personalUploadSingle, (req, res) => {
   const subject = db.prepare("SELECT id FROM subjects WHERE id=? AND user_id=?").get(req.params.id, req.user.id);
   if (!subject) return res.status(404).json({ error: "Subject not found" });
   if (!req.file) return res.status(400).json({ error: "Choose a note file first" });
@@ -274,7 +294,7 @@ app.get("/api/personal-files", auth, (req, res) => res.json(db.prepare(`
   LEFT JOIN syllabus_topics ON syllabus_topics.id=files.topic_id
   WHERE files.user_id=? AND files.group_id IS NULL ORDER BY files.created_at DESC
 `).all(req.user.id)));
-app.post("/api/personal-files", auth, uploadVideoFields, (req, res) => {
+app.post("/api/personal-files", auth, personalUploadVideoFields, (req, res) => {
   const file = req.files?.file?.[0];
   if (!file) return res.status(400).json({ error: "Choose a video or notes file first" });
   const subjectId = req.body.subject_id ? Number(req.body.subject_id) : null;
