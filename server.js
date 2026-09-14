@@ -374,9 +374,10 @@ app.get("/api/analytics", auth, (req, res) => {
   const weekDaily = db.prepare(`SELECT date(logged_at,'localtime') day, SUM(minutes) minutes FROM study_logs WHERE user_id=? AND date(logged_at,'localtime') >= date('now','localtime','-6 days') GROUP BY day ORDER BY day`).all(req.user.id);
   const monthDaily = db.prepare(`SELECT date(logged_at,'localtime') day, SUM(minutes) minutes FROM study_logs WHERE user_id=? AND strftime('%Y-%m',logged_at,'localtime')=strftime('%Y-%m','now','localtime') GROUP BY day ORDER BY day`).all(req.user.id);
   const yearMonthly = db.prepare(`SELECT strftime('%Y-%m',logged_at,'localtime') month, SUM(minutes) minutes FROM study_logs WHERE user_id=? AND strftime('%Y',logged_at,'localtime')=strftime('%Y','now','localtime') GROUP BY month ORDER BY month`).all(req.user.id);
+  const yearLogs = db.prepare(`SELECT study_logs.id,study_logs.minutes,study_logs.note,study_logs.logged_at,subjects.name subject_name FROM study_logs LEFT JOIN subjects ON subjects.id=study_logs.subject_id WHERE study_logs.user_id=? AND strftime('%Y',study_logs.logged_at,'localtime')=strftime('%Y','now','localtime') ORDER BY study_logs.logged_at DESC`).all(req.user.id);
   const allTime = db.prepare("SELECT COALESCE(SUM(minutes),0) minutes FROM study_logs WHERE user_id=?").get(req.user.id).minutes;
   const bySubject = db.prepare(`SELECT COALESCE(subjects.name,'Unassigned') name,SUM(study_logs.minutes) minutes FROM study_logs LEFT JOIN subjects ON subjects.id=study_logs.subject_id WHERE study_logs.user_id=? GROUP BY subject_id ORDER BY minutes DESC`).all(req.user.id);
-  res.json({ today, weekDaily, monthDaily, yearMonthly, allTime, bySubject });
+  res.json({ today, weekDaily, monthDaily, yearMonthly, yearLogs, allTime, bySubject });
 });
 
 app.get("/api/groups", auth, (req, res) => res.json(db.prepare(`

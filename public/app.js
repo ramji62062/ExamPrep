@@ -131,6 +131,12 @@ function renderAnalytics(data, range) {
   $("#analytics-title").textContent = range === "month" ? "This month" : range === "year" ? "This year" : "This week";
   $("#analytics-summary").textContent = `${total} minutes · ${Math.floor(total / 60)}h ${total % 60}m`;
   $("#subject-breakdown").innerHTML = data.bySubject.map(x => `<div class="breakdown-row"><span>${esc(x.name)}</span><b>${x.minutes} min</b></div>`).join("") || `<p class="empty-state">Log a session to see your breakdown.</p>`;
+  const yearLogList = $("#year-log-list");
+  if (yearLogList) {
+    yearLogList.classList.toggle("hidden", range !== "year");
+    const yearRows = data.yearLogs.map(log => `<div class="year-log-row"><div><b>${log.minutes} min · ${esc(log.subject_name || "General study")}</b><small>${fmtDate(log.logged_at)} · ${esc(log.note || "Focused study")}</small></div><button type="button" class="delete-log" data-delete-log="${log.id}" aria-label="Delete study log">×</button></div>`).join("");
+    yearLogList.innerHTML = range === "year" ? `<h4>Study logs this year</h4>${yearRows || '<p class="empty-state">No study logs recorded this year.</p>'}` : "";
+  }
 }
 function startTicker(restart = true) {
   if (restart) state.elapsed = 0; clearInterval(state.timerHandle); $("#timer-start").classList.add("hidden"); $("#timer-stop").classList.remove("hidden"); $("#timer-status").textContent = "IN THE ZONE";
