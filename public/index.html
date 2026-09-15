@@ -78,6 +78,6 @@
   <dialog id="log-dialog"><form method="dialog" id="log-form"><div class="dialog-head"><h3>Log study time</h3><button type="button" class="close">×</button></div><label>Minutes<input name="minutes" type="number" min="1" required placeholder="45"></label><label>Subject<select name="subject_id" id="log-subject"><option value="">General study</option></select></label><label>Note<textarea name="note" placeholder="What did you work on?"></textarea></label><button class="primary full">Add to log</button></form></dialog>
   <dialog id="group-dialog"><form method="dialog" id="group-form"><div class="dialog-head"><h3>Create a study group</h3><button type="button" class="close">×</button></div><label>Group name<input name="name" required placeholder="e.g. Biology buddies"></label><label>Description<textarea name="description" placeholder="What are you preparing for?"></textarea></label><button class="primary full">Create group</button></form></dialog>
   <dialog id="join-dialog"><form method="dialog" id="join-form"><div class="dialog-head"><h3>Join a study group</h3><button type="button" class="close">×</button></div><label>Invite code<input name="code" required placeholder="e.g. 7A3F21BC" maxlength="8" autocomplete="off"></label><button class="primary full">Join group</button></form></dialog>
-  <script src="/socket.io/socket.io.js"></script><script src="/app.js"></script>
+  <script src="/socket.io/socket.io.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script src="/app.js"></script>
 </body>
 </html>

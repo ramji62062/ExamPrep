@@ -4,10 +4,15 @@ const state = { user: null, subjects: [], logs: [], topics: {}, notes: {}, group
 const quotes = [["The secret of getting ahead is getting started.","Mark Twain"],["Great things are done by a series of small things brought together.","Vincent van Gogh"],["Success is the sum of small efforts, repeated day in and day out.","Robert Collier"],["You do not have to be extreme, just consistent.","Unknown"],["A little progress each day adds up to big results.","Unknown"]];
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmtDate = value => value ? new Date(value.replace(" ", "T") + (value.length === 10 ? "T00:00:00" : "")).toLocaleDateString(undefined, { month:"short", day:"numeric" }) : "—";
+let supabaseClient;
 const api = async (url, options = {}) => {
   const headers = options.body instanceof FormData ? {} : { "Content-Type":"application/json" };
+  if (!localStorage.getItem("atlas:auth-token") && supabaseClient) {
+    const { data } = await supabaseClient.auth.getSession();
+    if (data.session?.access_token) localStorage.setItem("atlas:auth-token", data.session.access_token);
+  }
   const token = localStorage.getItem("atlas:auth-token");
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) headers.Authorization = "Bearer " + token;
   const response = await fetch(url, { headers, ...options });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Something went wrong");
@@ -208,7 +213,14 @@ async function loadAdmin() {
 function adminSubmit(url) { return async e => { e.preventDefault(); await api(url, { method:"POST", body:JSON.stringify(formData(e.target)) }); toast("Updated"); loadAdmin(); }; }
 
 async function boot() {
-  try { const data = await api("/api/me"); state.user = data.user; showApp(); } catch (_) { $("#auth-view").classList.remove("hidden"); }
+  try {
+    const config = await fetch("/api/config").then(r => r.json());
+    supabaseClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+    const { data: session } = await supabaseClient.auth.getSession();
+    if (session.session?.access_token) localStorage.setItem("atlas:auth-token", session.session.access_token);
+    const data = await api("/api/me"); state.user = data.user; showApp();
+    supabaseClient.auth.onAuthStateChange((_event, next) => { if (next?.access_token) localStorage.setItem("atlas:auth-token", next.access_token); else localStorage.removeItem("atlas:auth-token"); });
+  } catch (_) { localStorage.removeItem("atlas:auth-token"); $("#auth-view").classList.remove("hidden"); }
 }
 window.addEventListener("beforeunload", () => {
   if (!state.timer) return;
@@ -246,7 +258,7 @@ document.addEventListener("click", async e => {
     const value = prompt("Progress percentage (0-100)", topic?.progress ?? 0);
     if (value !== null) try { await api(`/api/subjects/${state.detailSubjectId}/topics/${detailProgress.dataset.detailTopicProgress}`, { method:"PATCH", body:JSON.stringify({ progress:Number(value), status:Number(value) >= 100 ? "complete" : Number(value) > 0 ? "in-progress" : "not-started" }) }); await loadDashboard(); renderSubjectDetail(); toast("Progress updated"); } catch (err) { toast(err.message, true); }
   }
-  if (e.target.id === "logout") { await api("/api/auth/logout", { method:"POST" }); localStorage.removeItem("atlas:auth-token"); location.reload(); }
+  if (e.target.id === "logout") { if (supabaseClient) await supabaseClient.auth.signOut(); localStorage.removeItem("atlas:auth-token"); location.reload(); }
   const close = e.target.closest(".close"); if (close) { e.preventDefault(); close.closest("dialog")?.close(); return; }
   if (e.target.id === "add-subject") { $("#subject-form").reset(); $("#subject-form [name=id]").value = ""; $("#subject-dialog-title").textContent = "Add subject"; $("#subject-dialog").showModal(); }
   if (e.target.id === "quick-log" || e.target.id === "overview-log") { $("#log-form").reset(); $("#log-dialog").showModal(); }
@@ -283,7 +295,13 @@ document.addEventListener("click", async e => {
   const warrant = e.target.closest("[data-warrant]"); if (warrant) { await api(`/api/admin/warrants/${warrant.dataset.warrant}`, {method:"PATCH",body:JSON.stringify({status:warrant.dataset.status})}); loadAdmin(); }
   const role = e.target.closest("[data-role-id]"); if (role) { await api(`/api/admin/users/${role.dataset.roleId}`, {method:"PATCH",body:JSON.stringify({role:role.dataset.role})}); loadAdmin(); }
 });
-$$("[data-auth]").forEach(form => form.addEventListener("submit", async e => { e.preventDefault(); try { const data = await api(`/api/auth/${form.dataset.auth}`, {method:"POST",body:JSON.stringify(formData(form))}); localStorage.setItem("atlas:auth-token", data.token); state.user = data.user; showApp(); } catch (err) { toast(err.message,true); } }));
+$$("[data-auth]").forEach(form => form.addEventListener("submit", async e => { e.preventDefault(); try {
+  const values = formData(form); const result = form.dataset.auth === "register"
+    ? await supabaseClient.auth.signUp({ email: values.email, password: values.password, options: { data: { name: values.name } } })
+    : await supabaseClient.auth.signInWithPassword({ email: values.email, password: values.password });
+  if (result.error) throw result.error; if (!result.data.session) throw new Error("Check your email to confirm your account");
+  localStorage.setItem("atlas:auth-token", result.data.session.access_token); const me = await api("/api/me"); state.user = me.user; showApp();
+} catch (err) { toast(err.message,true); } }));
 $("#subject-form").addEventListener("submit", async e => { e.preventDefault(); const f = formData(e.target); const id = f.id; delete f.id; try { await api(id ? `/api/subjects/${id}` : "/api/subjects", {method:id?"PUT":"POST",body:JSON.stringify(f)}); $("#subject-dialog").close(); toast("Syllabus updated"); loadDashboard(); } catch(err) { toast(err.message,true); } });
 $("#log-form").addEventListener("submit", async e => { e.preventDefault(); try { await api("/api/study-logs",{method:"POST",body:JSON.stringify(formData(e.target))}); $("#log-dialog").close(); toast("Study time logged"); loadDashboard(); } catch(err){toast(err.message,true);} });
 $("#personal-file-form").addEventListener("submit", async e => {
