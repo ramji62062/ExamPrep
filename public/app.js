@@ -144,9 +144,22 @@ function renderLogs() {
   $("#log-preview").className = html ? "activity-list" : "empty-state"; $("#log-preview").innerHTML = html || "Your activity will appear here.";
 }
 async function loadDashboard() {
-  const data = await api("/api/dashboard"); state.subjects = data.subjects; state.logs = await api("/api/study-logs").then(x => x);
-  await Promise.all(state.subjects.map(async subject => { const data = await api(`/api/subjects/${subject.id}/topics`); state.topics[subject.id] = data.topics; state.notes[subject.id] = data.notes; }));
+  const data = await api("/api/dashboard");
+  state.subjects = Array.isArray(data.subjects) ? data.subjects : [];
+  renderSubjects();
+  const logsPromise = api("/api/study-logs").then(logs => { state.logs = Array.isArray(logs) ? logs : []; renderLogs(); }).catch(() => { state.logs = []; renderLogs(); });
+  await Promise.all(state.subjects.map(async subject => {
+    try {
+      const subjectData = await api(`/api/subjects/${subject.id}/topics`);
+      state.topics[subject.id] = subjectData.topics || [];
+      state.notes[subject.id] = subjectData.notes || [];
+    } catch (_) {
+      state.topics[subject.id] = [];
+      state.notes[subject.id] = [];
+    }
+  }));
   renderSubjects(); renderLogs();
+  await logsPromise;
   $("#week-minutes").textContent = data.weekMinutes; $("#subject-count").textContent = `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"}`;
   const avg = state.subjects.length ? Math.round(state.subjects.reduce((a, s) => a + s.progress, 0) / state.subjects.length) : 0;
   $("#avg-progress").textContent = `${avg}%`; $("#avg-progress-bar").style.width = `${avg}%`;
