@@ -101,6 +101,6 @@ app.get("*", (req, res, next) => req.path.startsWith("/api/") ? res.status(404).
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   console.error("Request failed:", error);
-  res.status(500).json({ error: "The server could not complete that request. Please try again." });
+  res.status(500).json({ error: process.env.NODE_ENV === "production" ? (error.message || "The server could not complete that request. Please try again.") : String(error.message || error) });
 });
 server.listen(PORT, () => console.log(`Exam Prep Tracker running at http://localhost:${PORT}`));
