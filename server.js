@@ -39,7 +39,12 @@ for (const method of ["get", "post", "put", "patch", "delete"]) {
   const register = app[method].bind(app);
   app[method] = (route, ...handlers) => register(route, ...handlers.map(handler => handler.length < 4 ? asyncRoute(handler) : handler));
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", async (_req, res) => {
+  if (!hasSupabaseConfig) return res.status(503).json({ ok: false, error: "Supabase server configuration is missing" });
+  const { error } = await q("users").select("id").limit(1);
+  if (error) return res.status(503).json({ ok: false, error: "Database is unavailable" });
+  res.json({ ok: true });
+});
 app.get("/api/config", (req, res) => {
   const configuredRedirect = process.env.NEXT_PUBLIC_SUPABASE_REDIRECT_URL;
   const redirectUrl = configuredRedirect && !/localhost|127\.0\.0\.1/.test(configuredRedirect)
