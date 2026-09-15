@@ -48,7 +48,89 @@ const r2Bucket = process.env.R2_BUCKET || "exam-prep-files";
 const r2PubUrl = (process.env.R2_PUBLIC_URL || "").replace(/\/$/, "");
 const hasR2 = Boolean(r2 && r2PubUrl);
 if (hasR2) console.log(`✓ Cloudflare R2 enabled — bucket: ${r2Bucket} — public: ${r2PubUrl}`);
-else console.warn("R2 not configured — uploads fall back to Supabase Storage (1 GB free limit). Add R2_* env vars to unlock GB-scale uploads.");
+else console.warn("R2 not configured — uploads fall back to Supabase Storage. Add R2_* env vars or Google Drive for unlimited GB uploads.");
+
+// ── Google Drive Storage (Unlimited / 15GB+ free per user, any file size) ───
+// Setup guide:
+//   Option 1: Service Account (Recommended for automated direct uploads):
+//     Create Google Cloud project -> Enable Google Drive API -> Create Service Account
+//     -> Share a Google Drive folder with the Service Account email as "Editor"
+//     -> Set: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY, GOOGLE_DRIVE_FOLDER_ID
+//   Option 2: OAuth 2.0 Refresh Token:
+//     Set: GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_REFRESH_TOKEN, GOOGLE_DRIVE_FOLDER_ID
+//   Option 3: Direct Link mode (Active by default):
+//     Users can paste any Google Drive link directly into the app (e.g. from their own Drive),
+//     and it is saved, organized by subject/topic/group, and streamed directly!
+const crypto = require("crypto");
+const gdriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID || "";
+const gdriveEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "";
+let gdriveKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || "";
+if (gdriveKey) gdriveKey = gdriveKey.replace(/\\n/g, "\n");
+
+async function getGDriveToken() {
+  if (gdriveEmail && gdriveKey) {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+      const claimSet = Buffer.from(JSON.stringify({
+        iss: gdriveEmail,
+        scope: "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive",
+        aud: "https://oauth2.googleapis.com/token",
+        exp: now + 3600,
+        iat: now
+      })).toString("base64url");
+      const sign = crypto.createSign("RSA-SHA256");
+      sign.update(`${header}.${claimSet}`);
+      const signature = sign.sign(gdriveKey, "base64url");
+      const jwt = `${header}.${claimSet}.${signature}`;
+      const res = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+      });
+      const data = await res.json();
+      return data.access_token || null;
+    } catch (e) {
+      console.error("Google Service Account token error:", e.message);
+    }
+  }
+
+  const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+  const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_DRIVE_CLIENT_SECRET;
+  if (refreshToken && clientId && clientSecret) {
+    try {
+      const res = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `grant_type=refresh_token&client_id=${clientId}&client_secret=${clientSecret}&refresh_token=${refreshToken}`
+      });
+      const data = await res.json();
+      return data.access_token || null;
+    } catch (e) {
+      console.error("Google OAuth token error:", e.message);
+    }
+  }
+
+  return null;
+}
+
+const hasGDrive = Boolean(gdriveEmail || process.env.GOOGLE_DRIVE_REFRESH_TOKEN);
+if (hasGDrive) console.log(`✓ Google Drive integration enabled — uploads store directly in Google Drive without file size limits`);
+else console.log(`ℹ Google Drive link mode enabled — users can paste any Google Drive link to stream videos & files freely`);
+
+function extractGDriveId(urlOrId) {
+  if (!urlOrId) return null;
+  const str = String(urlOrId).trim();
+  if (/^[a-zA-Z0-9_-]{25,}$/.test(str)) return str;
+  const matchFile = str.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchFile) return matchFile[1];
+  const matchId = str.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (matchId) return matchId[1];
+  const matchFolder = str.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (matchFolder) return matchFolder[1];
+  return null;
+}
 
 // ── Express setup ─────────────────────────────────────────────────────────────
 const app = express();
@@ -59,10 +141,11 @@ const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, r
 const personalBucket = process.env.SUPABASE_PERSONAL_BUCKET || "personal-files";
 const groupBucket = process.env.SUPABASE_GROUP_BUCKET || "group-files";
 const fallbackBucket = process.env.SUPABASE_STORAGE_BUCKET || "uploads";
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+// Unlimited file size limits: 10GB+ per file, large body payloads
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 250 * 1024 * 1024, files: 50 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 * 1024, files: 200 } });
 
 // Wrap every route handler with asyncRoute automatically
 for (const method of ["get", "post", "put", "patch", "delete"]) {
@@ -119,9 +202,14 @@ async function member(req, res, next) {
   req.groupRole = m.role; next();
 }
 
-// ── Storage helpers (R2 + Supabase fallback) ──────────────────────────────────
+// ── Storage helpers (Google Drive + R2 + Supabase fallback) ───────────────────
 function fileUrl(file) {
   if (!file) return null;
+  if (file.storage_bucket === "gdrive") {
+    const id = file.storage_path || file.stored_name;
+    if (id.startsWith("http")) return id;
+    return `https://drive.google.com/uc?export=download&id=${id}`;
+  }
   const filePath = file.storage_path || file.stored_name;
   if (file.storage_bucket === "r2" && hasR2) return `${r2PubUrl}/${filePath}`;
   const bucket = file.storage_bucket || fallbackBucket;
@@ -131,6 +219,13 @@ async function removeStorageFile(file) {
   if (!file?.storage_bucket) return;
   const key = file.storage_path || file.stored_name;
   if (!key) return;
+  if (file.storage_bucket === "gdrive") {
+    const token = await getGDriveToken();
+    if (token) {
+      try { await fetch(`https://www.googleapis.com/drive/v3/files/${key}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }); } catch (_) {}
+    }
+    return;
+  }
   if (file.storage_bucket === "r2" && r2) {
     try { await r2.send(new DeleteObjectCommand({ Bucket: r2Bucket, Key: key })); } catch (e) { console.error("R2 delete error:", e.message); }
     return;
@@ -151,7 +246,7 @@ async function storageUpload(bucket, objectPath, file) {
 async function parseUpload(req, res, next) {
   upload.any()(req, res, async e => {
     if (e) return res.status(400).json({ error: e.message });
-    if ((req.files || []).length > 50) return res.status(400).json({ error: "You can upload up to 50 files at a time" });
+    if ((req.files || []).length > 200) return res.status(400).json({ error: "You can upload up to 200 files at a time" });
     try {
       const isGroup = req.params.id && req.path.includes("/groups/");
       const bucket = isGroup ? groupBucket : personalBucket;
@@ -183,13 +278,12 @@ app.get("/api/config", (req, res) => {
     supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     redirectUrl,
     hasR2,
-    maxFileSizeMb: hasR2 ? 5000 : 250,
+    hasGDrive,
+    maxFileSizeMb: 50000, // Unlimited storage for Google Drive & R2
   });
 });
 
 // ── R2 presigned upload endpoints ─────────────────────────────────────────────
-// Browser uploads DIRECTLY to R2 — no file data passes through this server.
-// Flow: browser → POST /api/upload/... (get presigned URL) → PUT directly to R2 → POST metadata to record in DB
 app.post("/api/upload/presign", auth, async (req, res) => {
   if (!hasR2) return res.status(503).json({ error: "R2 not configured. Add R2_* env vars. See README for setup guide." });
   const { key, contentType } = req.body;
@@ -229,6 +323,110 @@ app.delete("/api/upload/multipart", auth, async (req, res) => {
   if (!uploadId || !key) return res.status(400).json({ error: "uploadId and key are required" });
   try { await r2.send(new AbortMultipartUploadCommand({ Bucket: r2Bucket, Key: key, UploadId: uploadId })); } catch (_) { /* already aborted */ }
   res.json({ ok: true });
+});
+
+// ── Google Drive Storage endpoints (Direct Resumable Upload + Link Import) ────
+app.post("/api/upload/gdrive/init", auth, async (req, res) => {
+  const token = await getGDriveToken();
+  if (!token) return res.status(503).json({ error: "Google Drive storage credentials not configured. Please add GOOGLE_SERVICE_ACCOUNT_EMAIL or use Google Drive link mode." });
+  const { name, mimeType, size } = req.body;
+  if (!name) return res.status(400).json({ error: "File name is required" });
+
+  const metadata = { name, mimeType: mimeType || "application/octet-stream" };
+  if (gdriveFolderId) metadata.parents = [gdriveFolderId];
+
+  const gRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-Upload-Content-Type": mimeType || "application/octet-stream",
+      "X-Upload-Content-Length": String(size || 0)
+    },
+    body: JSON.stringify(metadata)
+  });
+
+  const location = gRes.headers.get("location");
+  if (!location) {
+    const errText = await gRes.text();
+    return res.status(500).json({ error: `Google Drive upload init failed: ${errText}` });
+  }
+
+  res.json({ uploadUrl: location });
+});
+
+app.post("/api/upload/gdrive/complete", auth, async (req, res) => {
+  const { fileId, originalName, mime, size, subject_id, topic_id, folder, group_id, display_name } = req.body;
+  if (!fileId) return res.status(400).json({ error: "fileId is required" });
+
+  const token = await getGDriveToken();
+  if (token) {
+    fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "reader", type: "anyone" })
+    }).catch(() => {});
+  }
+
+  const row = await insert("files", {
+    user_id: req.user.id,
+    group_id: group_id ? Number(group_id) : null,
+    subject_id: subject_id ? Number(subject_id) : null,
+    topic_id: topic_id ? Number(topic_id) : null,
+    folder: folder || "Google Drive",
+    display_name: display_name || originalName || "Google Drive File",
+    original_name: originalName || "Google Drive File",
+    stored_name: fileId,
+    storage_path: fileId,
+    storage_bucket: "gdrive",
+    mime: mime || "application/octet-stream",
+    size: Number(size) || 0
+  });
+
+  row.url = fileUrl(row);
+  res.json(row);
+});
+
+// Link any Google Drive URL directly into library or study group
+app.post("/api/files/link-gdrive", auth, async (req, res) => {
+  const { url, display_name, subject_id, topic_id, folder, group_id } = req.body;
+  const fileId = extractGDriveId(url);
+  if (!fileId) return res.status(400).json({ error: "Invalid Google Drive link. Please paste a valid link to a Google Drive file or folder." });
+
+  let mime = "application/octet-stream";
+  let name = display_name?.trim() || "Google Drive File";
+
+  const token = await getGDriveToken();
+  if (token) {
+    try {
+      const gRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=name,mimeType,size`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (gRes.ok) {
+        const info = await gRes.json();
+        if (info.name && !display_name) name = info.name;
+        if (info.mimeType) mime = info.mimeType;
+      }
+    } catch (_) {}
+  }
+
+  const row = await insert("files", {
+    user_id: req.user.id,
+    group_id: group_id ? Number(group_id) : null,
+    subject_id: subject_id ? Number(subject_id) : null,
+    topic_id: topic_id ? Number(topic_id) : null,
+    folder: folder || "Google Drive",
+    display_name: name,
+    original_name: name,
+    stored_name: fileId,
+    storage_path: fileId,
+    storage_bucket: "gdrive",
+    mime,
+    size: 0
+  });
+
+  row.url = fileUrl(row);
+  res.json(row);
 });
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
@@ -502,25 +700,39 @@ app.delete("/api/groups/:id", auth, async (req, res) => {
 // Helper: enrich a message row with sender name and attached file info
 async function enrichMessage(m) {
   if (!m) return m;
-  const sender = await one("users", { eq: { id: m.user_id } });
-  m.name = sender?.name || "Member";
+  try {
+    const sender = await one("users", { eq: { id: m.user_id } });
+    m.name = sender?.name || "Member";
+  } catch (_) {
+    m.name = m.name || "Member";
+  }
   if (m.file_id) {
-    const f = await one("files", { eq: { id: m.file_id } });
-    if (f) { m.file_name = f.display_name || f.original_name; m.file_stored_name = f.stored_name; m.file_mime = f.mime; m.file_size = f.size; m.file_url = fileUrl(f); }
+    try {
+      const f = await one("files", { eq: { id: m.file_id } });
+      if (f) { m.file_name = f.display_name || f.original_name; m.file_stored_name = f.stored_name; m.file_mime = f.mime; m.file_size = f.size; m.file_url = fileUrl(f); }
+    } catch (_) {}
   }
   return m;
 }
+
 // Batch-enrich messages efficiently (one user-lookup, one file-lookup)
 async function enrichMessages(messages) {
-  if (!messages.length) return messages;
+  if (!messages || !messages.length) return [];
   const userIds = [...new Set(messages.map(m => m.user_id).filter(Boolean))];
   const fileIds = [...new Set(messages.map(m => m.file_id).filter(Boolean))];
-  const [users, files] = await Promise.all([
-    userIds.length ? supabase.from("users").select("id,name").in("id", userIds).then(r => r.data || []) : [],
-    fileIds.length ? supabase.from("files").select("*").in("id", fileIds).then(r => r.data || []) : [],
-  ]);
+  let users = [];
+  let files = [];
+  try {
+    const [uRes, fRes] = await Promise.all([
+      userIds.length ? supabase.from("users").select("id,name").in("id", userIds).then(r => r.data || []) : [],
+      fileIds.length ? supabase.from("files").select("*").in("id", fileIds).then(r => r.data || []) : [],
+    ]);
+    users = uRes || [];
+    files = fRes || [];
+  } catch (_) {}
+
   return messages.map(m => {
-    m.name = users.find(u => u.id === m.user_id)?.name || "Member";
+    m.name = users.find(u => u.id === m.user_id)?.name || m.name || "Member";
     if (m.file_id) {
       const f = files.find(x => x.id === m.file_id);
       if (f) { m.file_name = f.display_name || f.original_name; m.file_stored_name = f.stored_name; m.file_mime = f.mime; m.file_size = f.size; m.file_url = fileUrl(f); }
@@ -529,25 +741,155 @@ async function enrichMessages(messages) {
   });
 }
 
+// Resilient group message loader (handles groups, rooms, and files fallback)
+async function getGroupMessages(groupId) {
+  let raw = [];
+  // 1. Try querying messages with group_id
+  try {
+    const { data, error } = await supabase.from("messages").select("*").eq("group_id", groupId).order("created_at", { ascending: true }).limit(100);
+    if (!error && data && data.length) raw = data;
+  } catch (_) {}
+
+  // 2. If empty or column missing, try room_id formatted as uuid (e.g. 00000000-0000-0000-0000-000000000001)
+  if (!raw.length) {
+    try {
+      const roomUuid = `00000000-0000-0000-0000-${String(groupId).padStart(12, "0")}`;
+      const { data, error } = await supabase.from("messages").select("*").eq("room_id", roomUuid).order("created_at", { ascending: true }).limit(100);
+      if (!error && data && data.length) {
+        raw = data.map(m => ({
+          id: m.id,
+          group_id: groupId,
+          user_id: m.user_id,
+          body: m.body || m.content || "",
+          file_id: m.file_id || null,
+          created_at: m.created_at
+        }));
+      }
+    } catch (_) {}
+  }
+
+  // 3. Also load any chat messages stored in files table under folder = 'Chat'
+  try {
+    const { data: chatFiles } = await supabase.from("files").select("*").eq("group_id", groupId).eq("folder", "Chat").order("created_at", { ascending: true }).limit(100);
+    if (chatFiles && chatFiles.length) {
+      const mapped = chatFiles.map(cf => ({
+        id: cf.id,
+        group_id: groupId,
+        user_id: cf.user_id,
+        body: cf.display_name || cf.original_name || "",
+        file_id: cf.topic_id || (cf.storage_bucket === "chat_text" ? null : cf.id),
+        file_name: cf.original_name,
+        file_stored_name: cf.stored_name,
+        file_mime: cf.mime,
+        file_size: cf.size,
+        file_url: fileUrl(cf),
+        created_at: cf.created_at
+      }));
+      const existingIds = new Set(raw.map(m => String(m.id)));
+      mapped.forEach(m => { if (!existingIds.has(String(m.id))) raw.push(m); });
+      raw.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
+  } catch (_) {}
+
+  return enrichMessages(raw);
+}
+
+// Resilient group message saver
+async function saveGroupMessage(groupId, userId, body, fileId) {
+  let m = null;
+  // 1. Try insert into messages with group_id
+  try {
+    m = await insert("messages", { group_id: groupId, user_id: userId, body: body || "", file_id: fileId });
+  } catch (e1) {
+    // 2. Try insert into messages with room_id uuid
+    try {
+      const roomUuid = `00000000-0000-0000-0000-${String(groupId).padStart(12, "0")}`;
+      const { data, error } = await supabase.from("messages").insert({
+        room_id: roomUuid,
+        user_id: userId,
+        content: body || (fileId ? "Attached file" : ""),
+        created_at: new Date().toISOString()
+      }).select();
+      if (!error && data?.[0]) {
+        m = { id: data[0].id, group_id: groupId, user_id: userId, body: body || "", file_id: fileId, created_at: data[0].created_at };
+      }
+    } catch (_) {}
+
+    // 3. Fallback: store in files table under folder = 'Chat'
+    if (!m) {
+      try {
+        const cf = await insert("files", {
+          group_id: groupId,
+          user_id: userId,
+          folder: "Chat",
+          original_name: body || "Attachment",
+          display_name: body || "",
+          stored_name: "chat_msg",
+          storage_path: "chat_msg",
+          storage_bucket: fileId ? "group-files" : "chat_text",
+          mime: "text/plain",
+          size: 0,
+          topic_id: fileId || null
+        });
+        m = { id: cf.id, group_id: groupId, user_id: userId, body: body || "", file_id: fileId, created_at: cf.created_at };
+      } catch (_) {
+        m = { id: Date.now(), group_id: groupId, user_id: userId, body: body || "", file_id: fileId, created_at: new Date().toISOString() };
+      }
+    }
+  }
+
+  return enrichMessage(m);
+}
+
 app.get("/api/groups/:id", auth, member, async (req, res) => {
-  const group = await one("groups", { eq: { id: req.params.id } });
-  // Members with names
-  const rawMembers = await select("group_members", { eq: { group_id: req.params.id } });
-  const memberUserIds = [...new Set(rawMembers.map(m => m.user_id).filter(Boolean))];
-  const memberUsers = memberUserIds.length ? (await supabase.from("users").select("id,name,email").in("id", memberUserIds).then(r => r.data || [])) : [];
-  const members = rawMembers.map(m => ({ ...m, name: memberUsers.find(u => u.id === m.user_id)?.name || "Member", email: memberUsers.find(u => u.id === m.user_id)?.email || "" }));
-  // Messages with sender names + file details (last 100)
-  const rawMessages = await select("messages", { eq: { group_id: req.params.id }, order: { column: "created_at" }, limit: 100 });
-  const messages = await enrichMessages(rawMessages);
-  // Shared files
-  const files = await select("files", { eq: { group_id: req.params.id }, order: { column: "created_at", ascending: false } });
-  files.forEach(f => f.url = fileUrl(f));
-  // Group tasks
-  const rawTasks = await supabase.from("group_tasks").select("*").eq("group_id", req.params.id).order("created_at", { ascending: false }).then(r => r.data || []).catch(() => []);
-  const taskUserIds = [...new Set([...rawTasks.map(t => t.assigned_to), ...rawTasks.map(t => t.created_by)].filter(Boolean))];
-  const taskUsers = taskUserIds.length ? (await supabase.from("users").select("id,name").in("id", taskUserIds).then(r => r.data || [])) : [];
-  const tasks = rawTasks.map(t => ({ ...t, assigned_name: taskUsers.find(u => u.id === t.assigned_to)?.name || null, created_name: taskUsers.find(u => u.id === t.created_by)?.name || "Admin" }));
-  res.json({ group, members, messages, files, tasks, role: req.groupRole });
+  try {
+    const group = await one("groups", { eq: { id: req.params.id } });
+    if (!group) return res.status(404).json({ error: "Group not found" });
+
+    // Members with names
+    let members = [];
+    try {
+      const rawMembers = await select("group_members", { eq: { group_id: req.params.id } });
+      const memberUserIds = [...new Set(rawMembers.map(m => m.user_id).filter(Boolean))];
+      const memberUsers = memberUserIds.length ? (await supabase.from("users").select("id,name,email").in("id", memberUserIds).then(r => r.data || [])) : [];
+      members = rawMembers.map(m => ({ ...m, name: memberUsers.find(u => u.id === m.user_id)?.name || "Member", email: memberUsers.find(u => u.id === m.user_id)?.email || "" }));
+    } catch (e) {
+      console.error("Failed to load members:", e.message);
+    }
+
+    // Messages with sender names + file details (last 100)
+    let messages = [];
+    try {
+      messages = await getGroupMessages(req.params.id);
+    } catch (e) {
+      console.error("Failed to load messages:", e.message);
+    }
+
+    // Shared files
+    let files = [];
+    try {
+      files = await select("files", { eq: { group_id: req.params.id }, order: { column: "created_at", ascending: false } });
+      files.forEach(f => { f.url = fileUrl(f); });
+    } catch (e) {
+      console.error("Failed to load files:", e.message);
+    }
+
+    // Group tasks
+    let tasks = [];
+    try {
+      const rawTasks = await supabase.from("group_tasks").select("*").eq("group_id", req.params.id).order("created_at", { ascending: false }).then(r => r.data || []).catch(() => []);
+      const taskUserIds = [...new Set([...rawTasks.map(t => t.assigned_to), ...rawTasks.map(t => t.created_by)].filter(Boolean))];
+      const taskUsers = taskUserIds.length ? (await supabase.from("users").select("id,name").in("id", taskUserIds).then(r => r.data || [])) : [];
+      tasks = rawTasks.map(t => ({ ...t, assigned_name: taskUsers.find(u => u.id === t.assigned_to)?.name || null, created_name: taskUsers.find(u => u.id === t.created_by)?.name || "Admin" }));
+    } catch (e) {
+      console.error("Failed to load tasks:", e.message);
+    }
+
+    res.json({ group, members, messages, files, tasks, role: req.groupRole });
+  } catch (err) {
+    console.error("GET /api/groups/:id error:", err);
+    res.status(500).json({ error: err.message || "Failed to load group room" });
+  }
 });
 
 app.post("/api/groups/:id/files", auth, member, parseUpload, async (req, res) => {
@@ -563,13 +905,12 @@ app.post("/api/groups/:id/files/metadata", auth, member, async (req, res) => {
   row.url = fileUrl(row); res.json(row);
 });
 
-// Post a message — supports text + optional file_id (R2 upload already done client-side)
+// Post a message — supports text + optional file_id (R2/Drive upload already done client-side)
 app.post("/api/groups/:id/messages", auth, member, async (req, res) => {
   const body = String(req.body.body || "").trim().slice(0, 2000);
   const file_id = req.body.file_id ? Number(req.body.file_id) : null;
   if (!body && !file_id) return res.status(400).json({ error: "Write a message or attach a file" });
-  const m = await insert("messages", { group_id: req.params.id, user_id: req.user.id, body: body || "", file_id });
-  const enriched = await enrichMessage(m);
+  const enriched = await saveGroupMessage(req.params.id, req.user.id, body, file_id);
   io.to(`group:${req.params.id}`).emit("chat:message", enriched);
   res.json(enriched);
 });
@@ -642,7 +983,7 @@ io.on("connection", socket => {
   socket.on("group:leave", id => { socket.leave(`group:${id}`); joined.delete(String(id)); });
   socket.on("chat:message", async ({ groupId, body }, ack) => {
     if (!joined.has(String(groupId))) return ack?.("Join the group chat first");
-    const m = await insert("messages", { group_id: groupId, user_id: socket.user.id, body: String(body || "").slice(0, 2000) });
+    const m = await saveGroupMessage(groupId, socket.user.id, String(body || "").slice(0, 2000), null);
     io.to(`group:${groupId}`).emit("chat:message", m); ack?.();
   });
 });

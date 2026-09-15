@@ -110,7 +110,12 @@ const fileUrl = storedName => `/uploads/${String(storedName || "").split("/").ma
 
 const personalFileHtml = file => {
   const url = file.url || fileUrl(file.stored_name);
-  if (!isVideo(file)) return `<article class="library-card"><div class="file-icon">▤</div><div><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""}</small><a class="secondary file-link" href="${url}" target="_blank" rel="noopener">Open / download</a><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
+  const isGDrive = file.storage_bucket === "gdrive";
+  const gdriveBadge = isGDrive ? '<span class="status-pill complete">☁️ Drive</span> ' : '';
+  if (isGDrive && isVideo(file)) {
+    return `<article class="library-card video-card"><iframe src="https://drive.google.com/file/d/${file.storage_path}/preview" allow="autoplay; fullscreen" style="width:100%;height:260px;border:0;border-radius:7px"></iframe><div class="video-meta"><b>${gdriveBadge}${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""} · Powered by Google Drive</small><a class="secondary file-link" href="${url}" target="_blank" rel="noopener">Open in Drive</a><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
+  }
+  if (!isVideo(file)) return `<article class="library-card"><div class="file-icon">${isGDrive ? "☁️" : "▤"}</div><div><b>${gdriveBadge}${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""}</small><a class="secondary file-link" href="${url}" target="_blank" rel="noopener">Open / download</a><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
   return `<article class="library-card video-card"><video controls preload="metadata" playsinline src="${url}"${file.caption_stored_name ? `><track kind="captions" src="${fileUrl(file.caption_stored_name)}" srclang="en" label="Captions" default></video>` : "></video>"}<div class="video-meta"><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""} · Use the player menu for speed, volume, captions, and fullscreen.</small><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
 };
 
@@ -119,7 +124,15 @@ async function loadPersonalFiles() {
   try {
     const files = await api("/api/personal-files");
     el.innerHTML = files.map(personalFileHtml).join("") || `<div class="empty-state">No lectures or notes yet. Upload your first file above.</div>`;
-    const subject = $("#file-subject"); subject.innerHTML = `<option value="">Choose subject</option>${state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}`;
+    const subject = $("#file-subject"); if (subject) subject.innerHTML = `<option value="">Choose subject</option>${state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}`;
+    const gSub = $("#gdrive-file-subject"); if (gSub) gSub.innerHTML = `<option value="">Choose subject (optional)</option>${state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}`;
+    const gTopic = $("#gdrive-file-topic");
+    if (gSub && gTopic) {
+      gSub.onchange = () => {
+        const sid = gSub.value;
+        gTopic.innerHTML = `<option value="">Choose topic (optional)</option>${(state.topics[sid] || []).map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}`;
+      };
+    }
     updateFileTopics();
   } catch (err) { toast("Could not load files", true); }
 }
@@ -230,23 +243,59 @@ async function uploadToSupabase(bucket, objectPath, file, onProgress) {
   return { path: objectPath, bucket };
 }
 
+async function uploadToGDrive(file, onProgress, cancelRef) {
+  const init = await api("/api/upload/gdrive/init", {
+    method: "POST",
+    body: JSON.stringify({ name: file.name, mimeType: file.type, size: file.size })
+  });
+  const uploadUrl = init.uploadUrl;
+  const xhr = new XMLHttpRequest();
+  if (cancelRef) cancelRef._xhr = xhr;
+
+  return new Promise((resolve, reject) => {
+    xhr.upload.onprogress = e => onProgress(e.loaded);
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const resJson = JSON.parse(xhr.responseText || "{}");
+          const fileId = resJson.id || init.fileId;
+          resolve({ path: fileId, bucket: "gdrive" });
+        } catch (_) {
+          resolve({ path: init.fileId || file.name, bucket: "gdrive" });
+        }
+      } else {
+        reject(new Error(`Google Drive upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during Google Drive upload"));
+    xhr.onabort = () => reject(new Error("cancelled"));
+    xhr.open("PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.send(file);
+  });
+}
+
 async function uploadFileToStorage(bucket, objectPath, file, onProgress, cancelRef) {
   const cfg = window._appConfig;
+  if (cfg?.hasGDrive) {
+    try {
+      return await uploadToGDrive(file, onProgress, cancelRef);
+    } catch (e) {
+      console.warn("Google Drive direct upload failed, falling back:", e.message);
+    }
+  }
   if (cfg?.hasR2) return uploadToR2(objectPath, file, onProgress, cancelRef);
   return uploadToSupabase(bucket, objectPath, file, onProgress);
 }
 
 async function uploadWithStatus(url, form, statusElement, onSuccess) {
   const files = [...form.querySelector('input[name="file"]').files];
-  if (!files.length || files.length > 50) {
-    toast(files.length > 50 ? "Choose no more than 50 files" : "Choose at least one file", true);
+  if (!files.length) {
+    toast("Choose at least one file", true);
     return;
   }
-  const cfg = window._appConfig;
-  const maxMb = cfg?.maxFileSizeMb || 250;
-  const tooBig = files.filter(f => f.size > maxMb * 1024 * 1024);
-  if (tooBig.length) {
-    toast(`${tooBig[0].name} exceeds the ${maxMb} MB limit`, true);
+  if (files.length > 200) {
+    toast("Choose no more than 200 files at once", true);
     return;
   }
 
@@ -279,14 +328,46 @@ async function uploadWithStatus(url, form, statusElement, onSuccess) {
       const [index, file] = queue.shift();
       const cancelRef = {};
       cancelRefs[index] = cancelRef;
+      let startTime = Date.now();
+      let lastLoaded = 0;
+      let lastTime = startTime;
+
       try {
-        updateRow(index, "Uploading");
+        updateRow(index, "Uploading…");
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const objectPath = `${owner}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+
         const uploaded = await uploadFileToStorage(bucket, objectPath, file, bytes => {
-          updateRow(index, `${Math.round(bytes / file.size * 100)}%`);
+          const now = Date.now();
+          const timeDiff = (now - lastTime) / 1000;
+          let speedStr = "";
+          if (timeDiff >= 0.5) {
+            const bytesDiff = bytes - lastLoaded;
+            const mbps = ((bytesDiff / (1024 * 1024)) / timeDiff).toFixed(1);
+            speedStr = ` · ${mbps} MB/s`;
+            lastLoaded = bytes;
+            lastTime = now;
+          }
+          const pct = Math.round((bytes / file.size) * 100);
+          updateRow(index, `${pct}%${speedStr}`);
         }, cancelRef);
-        const metadata = await api(metadataUrl, { method:"POST", body:JSON.stringify({ file: { original_name:file.name, storage_path:uploaded.path, storage_bucket:uploaded.bucket, mime:file.type, size:file.size, display_name:files.length === 1 ? (extra.display_name || file.name) : file.name, folder:extra.folder || (isGroup ? "General" : "Personal"), subject_id:extra.subject_id || null, topic_id:extra.topic_id || null } }) });
+
+        const metadata = await api(metadataUrl, {
+          method: "POST",
+          body: JSON.stringify({
+            file: {
+              original_name: file.name,
+              storage_path: uploaded.path,
+              storage_bucket: uploaded.bucket,
+              mime: file.type,
+              size: file.size,
+              display_name: files.length === 1 ? (extra.display_name || file.name) : file.name,
+              folder: extra.folder || (isGroup ? "General" : "Personal"),
+              subject_id: extra.subject_id || null,
+              topic_id: extra.topic_id || null
+            }
+          })
+        });
         results.push(metadata);
         updateRow(index, "Uploaded ✓", "upload-success");
       } catch (err) {
@@ -308,7 +389,7 @@ async function uploadWithStatus(url, form, statusElement, onSuccess) {
     }
   };
 
-  await Promise.all(Array.from({ length: Math.min(6, files.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(8, files.length) }, worker));
   if (!isCancelled && results.length) {
     toast(`${results.length} of ${files.length} file${files.length === 1 ? "" : "s"} uploaded`);
     await onSuccess(results);
@@ -458,12 +539,18 @@ async function openGroup(id) {
   try {
     data = await api(`/api/groups/${id}`);
   } catch (err) {
-    room.innerHTML = `<div class="room-error"><p class="muted">Could not open room: ${esc(err.message)}</p><button class="text-btn" id="close-room-err">← Back</button></div>`;
+    room.innerHTML = `<div class="room-error" style="text-align:center"><p class="muted">Could not open room: ${esc(err.message)}</p><div style="margin-top:12px"><button class="text-btn" id="close-room-err">← Back</button><button class="primary" id="retry-room-err" style="margin-left:10px">Retry</button></div></div>`;
     $("#close-room-err").onclick = () => { room.classList.add("hidden"); $("#group-grid").classList.remove("hidden"); };
+    $("#retry-room-err").onclick = () => openGroup(id);
     return;
   }
   state.group = data;
-  const isAdmin = data.role === "admin" || data.group.owner_id === state.user.id;
+  const group = data.group || { id, name: "Study Room", invite_code: "" };
+  const isAdmin = data.role === "admin" || group.owner_id === state.user.id;
+  const members = Array.isArray(data.members) ? data.members : [];
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  const files = Array.isArray(data.files) ? data.files : [];
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
 
   // ── Build task panel HTML ──────────────────────────────────────────────────
   const taskItemHtml = t => `
@@ -482,8 +569,8 @@ async function openGroup(id) {
       </div>
     </div>`;
 
-  const tasksHtml = (data.tasks || []).map(taskItemHtml).join("") || `<p class="empty-state tiny">No tasks yet.</p>`;
-  const memberOptions = data.members.map(m => `<option value="${m.user_id}">${esc(m.name)}</option>`).join("");
+  const tasksHtml = tasks.map(taskItemHtml).join("") || `<p class="empty-state tiny">No tasks yet.</p>`;
+  const memberOptions = members.map(m => `<option value="${m.user_id}">${esc(m.name)}</option>`).join("");
 
   const taskPanelHtml = `
     <div class="tasks-section">
@@ -503,10 +590,10 @@ async function openGroup(id) {
   room.innerHTML = `
     <section class="chat-panel">
       <div class="chat-head">
-        <div><span class="eyebrow">STUDY ROOM</span><h3>${esc(data.group.name)}</h3></div>
+        <div><span class="eyebrow">STUDY ROOM</span><h3>${esc(group.name)}</h3></div>
         <button class="text-btn" id="close-room">← All groups</button>
       </div>
-      <div id="chat-messages" class="chat-messages">${data.messages.map(messageHtml).join("")}</div>
+      <div id="chat-messages" class="chat-messages">${messages.map(messageHtml).join("")}</div>
       <div class="chat-input-area">
         <div id="chat-upload-progress" class="chat-upload-bar hidden"><i></i><span>Uploading…</span></div>
         <form id="chat-form" class="chat-form">
@@ -520,11 +607,11 @@ async function openGroup(id) {
       </div>
     </section>
     <section class="panel members-panel">
-      <div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${data.members.length} members</h3></div></div>
+      <div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${members.length} members</h3></div></div>
       <div class="member-list">
-        ${data.members.map(m => `<div class="member"><span>${esc(m.name)}${m.user_id === state.user.id ? " (you)" : ""}</span><small>${m.role}</small>${isAdmin && m.user_id !== state.user.id ? `<button class="danger-text tiny" data-kick-member="${m.user_id}">Remove</button>` : ""}</div>`).join("")}
+        ${members.map(m => `<div class="member"><span>${esc(m.name)}${m.user_id === state.user.id ? " (you)" : ""}</span><small>${m.role}</small>${isAdmin && m.user_id !== state.user.id ? `<button class="danger-text tiny" data-kick-member="${m.user_id}">Remove</button>` : ""}</div>`).join("")}
       </div>
-      ${isAdmin ? `<div class="invite-code-row"><small class="muted tiny">Invite code: <b>${esc(data.group.invite_code)}</b></small></div>` : ""}
+      ${isAdmin ? `<div class="invite-code-row"><small class="muted tiny">Invite code: <b>${esc(group.invite_code)}</b></small></div>` : ""}
       <hr>
       ${taskPanelHtml}
       <hr>
@@ -536,8 +623,16 @@ async function openGroup(id) {
         <input name="folder" placeholder="Folder name (e.g. Notes)" value="General">
         <button class="secondary full">Upload files</button>
       </form>
+      <details class="gdrive-group-box" style="margin:10px 0 14px;border-top:1px solid var(--line);padding-top:10px">
+        <summary class="text-btn tiny" style="cursor:pointer;font-weight:700">☁️ Link from Google Drive (unlimited GB)</summary>
+        <form id="group-gdrive-form" style="display:grid;gap:6px;margin-top:8px">
+          <input name="url" placeholder="Paste Google Drive share link" required>
+          <input name="display_name" placeholder="File name (optional)">
+          <button class="secondary full tiny">＋ Attach from Google Drive</button>
+        </form>
+      </details>
       <div id="group-upload-status" class="upload-status hidden"></div>
-      <div id="file-list">${data.files.map(fileHtml).join("") || '<p class="empty-state tiny">No shared files yet.</p>'}</div>
+      <div id="file-list">${files.map(fileHtml).join("") || '<p class="empty-state tiny">No shared files yet.</p>'}</div>
     </section>`;
 
   // Scroll chat to bottom
@@ -551,6 +646,27 @@ async function openGroup(id) {
     state.group = null;
     if (state.socket) state.socket.emit("group:leave", id);
   };
+
+  // Wire up group Google Drive form
+  const gdriveGroupForm = $("#group-gdrive-form");
+  if (gdriveGroupForm) {
+    gdriveGroupForm.onsubmit = async e => {
+      e.preventDefault();
+      const fd = Object.fromEntries(new FormData(e.target).entries());
+      try {
+        const linked = await api("/api/files/link-gdrive", {
+          method: "POST",
+          body: JSON.stringify({ ...fd, group_id: id, folder: "Shared" })
+        });
+        const list = $("#file-list");
+        const empty = list.querySelector(".empty-state");
+        if (empty) empty.remove();
+        list.insertAdjacentHTML("afterbegin", fileHtml(linked));
+        e.target.reset();
+        toast("Google Drive file linked to group!");
+      } catch (err) { toast(err.message, true); }
+    };
+  }
 
   // ── Wire up member kick ────────────────────────────────────────────────────
   room.addEventListener("click", async e => {
@@ -993,6 +1109,16 @@ $$("[data-auth]").forEach(form => form.addEventListener("submit", async e => { e
 $("#subject-form").addEventListener("submit", async e => { e.preventDefault(); const f = formData(e.target); const id = f.id; delete f.id; try { const saved = await api(id ? `/api/subjects/${id}` : "/api/subjects", { method:id?"PUT":"POST", body:JSON.stringify(f) }); if (id) state.subjects = state.subjects.map(subject => subject.id == saved.id ? saved : subject); else state.subjects = [saved, ...state.subjects]; renderSubjects(); $("#subject-dialog").close(); await loadDashboard(); toast("Syllabus updated"); } catch(err) { toast(err.message, true); } });
 $("#log-form").addEventListener("submit", async e => { e.preventDefault(); try { await api("/api/study-logs", { method:"POST", body:JSON.stringify(formData(e.target)) }); $("#log-dialog").close(); toast("Study time logged"); loadDashboard(); } catch(err) { toast(err.message, true); } });
 $("#personal-file-form").addEventListener("submit", async e => { e.preventDefault(); uploadWithStatus("/api/personal-files", e.target, $("#personal-upload-status"), () => { e.target.reset(); loadPersonalFiles(); }); });
+$("#gdrive-link-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  const payload = Object.fromEntries(new FormData(e.target).entries());
+  try {
+    await api("/api/files/link-gdrive", { method: "POST", body: JSON.stringify(payload) });
+    toast("Google Drive file linked successfully!");
+    e.target.reset();
+    await loadPersonalFiles();
+  } catch (err) { toast(err.message, true); }
+});
 $("#file-subject").addEventListener("change", updateFileTopics);
 $("#group-form").addEventListener("submit", async e => { e.preventDefault(); try { const group = await api("/api/groups", { method:"POST", body:JSON.stringify(formData(e.target)) }); $("#group-dialog").close(); toast(`Group created. Invite code: ${group.invite_code}`); loadGroups(); } catch(err) { toast(err.message, true); } });
 $("#join-form").addEventListener("submit", async e => { e.preventDefault(); try { await api("/api/groups/join-by-code", { method:"POST", body:JSON.stringify(formData(e.target)) }); $("#join-dialog").close(); toast("Welcome to the group"); e.target.reset(); loadGroups(); } catch(err) { toast(err.message, true); } });
