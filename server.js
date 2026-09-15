@@ -6,9 +6,10 @@ const multer = require("multer");
 const { Server } = require("socket.io");
 const { createClient } = require("@supabase/supabase-js");
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-if (!url || !serviceKey) console.error("Supabase environment variables are missing. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Render.");
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const hasSupabaseConfig = Boolean(url && serviceKey);
+if (!hasSupabaseConfig) console.error("Missing Supabase server configuration. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY in Render.");
 const supabase = createClient(url || "https://missing-project.supabase.co", serviceKey || "missing-supabase-key", { auth: { persistSession: false, autoRefreshToken: false } });
 const app = express(); const server = http.createServer(app); const io = new Server(server);
 const PORT = process.env.PORT || 3000;
@@ -25,7 +26,7 @@ async function insert(table, values, single = true) { const { data, error } = aw
 async function update(table, values, eq) { const { data, error } = await q(table).update(values).match(eq).select(); if (error) throw error; return data?.[0] || null; }
 async function remove(table, eq) { const { error } = await q(table).delete().match(eq); if (error) throw error; }
 async function profile(authUser) { let u = authUser.email ? await one("users", { eq: { email: authUser.email } }) : null; if (!u) { const values = { name: authUser.user_metadata?.name || authUser.email?.split("@")[0] || "Student", email: authUser.email, role: "student" }; try { u = await insert("users", values); } catch (error) { if (!String(error.message || error).toLowerCase().includes("password")) throw error; u = await insert("users", { ...values, password: "" }); } } return { id: u.id, name: u.name, email: u.email, role: u.role || "student", created_at: u.created_at }; }
-async function auth(req, res, next) { const token = req.headers.authorization?.startsWith("Bearer ") && req.headers.authorization.slice(7); if (!token) return res.status(401).json({ error: "Bearer token required" }); const { data, error } = await supabase.auth.getUser(token); if (error || !data.user) return res.status(401).json({ error: "Session expired" }); try { req.user = await profile(data.user); next(); } catch (e) { res.status(500).json({ error: e.message }); } }
+async function auth(req, res, next) { if (!hasSupabaseConfig) return res.status(503).json({ error: "Server Supabase configuration is missing. Add SUPABASE_SERVICE_ROLE_KEY in Render." }); const token = req.headers.authorization?.startsWith("Bearer ") && req.headers.authorization.slice(7); if (!token) return res.status(401).json({ error: "Bearer token required" }); const { data, error } = await supabase.auth.getUser(token); if (error || !data.user) return res.status(401).json({ error: "Session expired" }); try { req.user = await profile(data.user); next(); } catch (e) { res.status(500).json({ error: e.message }); } }
 const admin = (req, res, next) => req.user.role === "admin" ? next() : res.status(403).json({ error: "Admin access required" });
 async function member(req, res, next) { const m = await one("group_members", { eq: { group_id: req.params.id, user_id: req.user.id } }); if (!m) return res.status(403).json({ error: "Join this group first" }); req.groupRole = m.role; next(); }
 async function storageUpload(bucket, objectPath, file) { let result = await supabase.storage.from(bucket).upload(objectPath, file.buffer, { contentType: file.mimetype || "application/octet-stream", upsert: false }); if (result.error && bucket !== fallbackBucket) { objectPath = `${bucket}/${objectPath}`; result = await supabase.storage.from(fallbackBucket).upload(objectPath, file.buffer, { contentType: file.mimetype || "application/octet-stream", upsert: false }); bucket = fallbackBucket; } if (result.error) throw result.error; return { bucket, path: objectPath }; }
