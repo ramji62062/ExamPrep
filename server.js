@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
 const bcrypt = require("bcrypt");
@@ -12,6 +13,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
+const authSecret = process.env.AUTH_SECRET || process.env.SESSION_SECRET || "exam-prep-development-secret";
+const authTokenLifetime = 1000 * 60 * 60 * 24 * 365 * 5;
 const dataDir = path.join(__dirname, "data");
 const uploadDir = path.join(__dirname, "uploads");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -144,7 +147,7 @@ const sessionMiddleware = session({
   secret: process.env.SESSION_SECRET || "exam-prep-development-secret",
   resave: false, saveUninitialized: false,
   store: sessionStore,
-  cookie: { httpOnly: true, sameSite: "lax", maxAge: 1000 * 60 * 60 * 24 * 14 }
+  cookie: { httpOnly: true, sameSite: "lax", maxAge: authTokenLifetime }
 });
 app.use(sessionMiddleware);
 app.use("/uploads", express.static(uploadDir));
@@ -186,9 +189,30 @@ const personalUploadVideoFields = (req, res, next) => personalUpload.fields([{ n
 });
 
 const userById = id => db.prepare("SELECT id,name,email,role,created_at FROM users WHERE id=?").get(id);
+const base64Url = value => Buffer.from(value).toString("base64url");
+function createAuthToken(userId) {
+  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = base64Url(JSON.stringify({ sub: userId, exp: Date.now() + authTokenLifetime }));
+  const unsigned = `${header}.${payload}`;
+  const signature = crypto.createHmac("sha256", authSecret).update(unsigned).digest("base64url");
+  return `${unsigned}.${signature}`;
+}
+function userFromAuthToken(token) {
+  try {
+    const [header, payload, signature] = String(token || "").split(".");
+    if (!header || !payload || !signature) return null;
+    const unsigned = `${header}.${payload}`;
+    const expected = crypto.createHmac("sha256", authSecret).update(unsigned).digest("base64url");
+    if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return claims.exp > Date.now() ? userById(claims.sub) : null;
+  } catch (_error) {
+    return null;
+  }
+}
 const auth = (req, res, next) => {
-  if (!req.session.userId) return res.status(401).json({ error: "Sign in required" });
-  req.user = userById(req.session.userId);
+  const bearer = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+  req.user = bearer ? userFromAuthToken(bearer) : userById(req.session.userId);
   if (!req.user) return res.status(401).json({ error: "Session expired" });
   next();
 };
@@ -209,18 +233,18 @@ app.post("/api/auth/register", async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const result = db.prepare("INSERT INTO users(name,email,password) VALUES(?,?,?)").run(name.trim(), email.trim().toLowerCase(), hash);
     req.session.userId = result.lastInsertRowid;
-    res.json({ user: userById(req.session.userId) });
+    res.json({ user: userById(req.session.userId), token: createAuthToken(req.session.userId) });
   } catch (err) { res.status(400).json({ error: err.code === "SQLITE_CONSTRAINT_UNIQUE" ? "Email is already registered" : "Unable to register" }); }
 });
 app.post("/api/auth/login", async (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE email=?").get(String(req.body.email || "").trim().toLowerCase());
   if (!user || !(await bcrypt.compare(req.body.password || "", user.password))) return res.status(401).json({ error: "Invalid email or password" });
   req.session.userId = user.id;
-  res.json({ user: userById(user.id) });
+  res.json({ user: userById(user.id), token: createAuthToken(user.id) });
 });
 app.post("/api/auth/logout", (req, res) => req.session.destroy(() => res.json({ ok: true })));
 app.get("/api/me", auth, (req, res) => res.json({ user: req.user }));
-app.get("/api/socket-token", auth, (req, res) => res.json({ sessionId: req.sessionID }));
+app.get("/api/socket-token", auth, (req, res) => res.json({ token: createAuthToken(req.user.id), sessionId: req.sessionID }));
 
 app.get("/api/dashboard", auth, (req, res) => {
   const subjects = db.prepare("SELECT * FROM subjects WHERE user_id=? ORDER BY exam_date IS NULL, exam_date").all(req.user.id);
@@ -492,6 +516,11 @@ app.patch("/api/admin/warrants/:id", auth, admin, (req, res) => { db.prepare("UP
 app.patch("/api/admin/users/:id", auth, admin, (req, res) => { db.prepare("UPDATE users SET role=? WHERE id=?").run(req.body.role === "admin" ? "admin" : "student", req.params.id); res.json({ ok: true }); });
 
 io.use((socket, next) => {
+  const tokenUser = userFromAuthToken(socket.handshake.auth?.token);
+  if (tokenUser) {
+    socket.user = tokenUser;
+    return next();
+  }
   const sid = socket.handshake.auth?.sessionId;
   if (!sid) return next(new Error("Authentication required"));
   sessionStore.get(sid, (err, sess) => {
