@@ -7,9 +7,9 @@ const { Server } = require("socket.io");
 const { createClient } = require("@supabase/supabase-js");
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!url || !serviceKey) throw new Error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
-const supabase = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+if (!url || !serviceKey) console.error("Supabase environment variables are missing. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Render.");
+const supabase = createClient(url || "https://missing-project.supabase.co", serviceKey || "missing-supabase-key", { auth: { persistSession: false, autoRefreshToken: false } });
 const app = express(); const server = http.createServer(app); const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const personalBucket = process.env.SUPABASE_PERSONAL_BUCKET || "personal-files";
