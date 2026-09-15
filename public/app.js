@@ -82,8 +82,8 @@ const isVideo = file => String(file.mime || "").startsWith("video/");
 const fileUrl = storedName => `/uploads/${String(storedName || "").split("/").map(encodeURIComponent).join("/")}`;
 const personalFileHtml = file => {
   const url = fileUrl(file.stored_name);
-  if (!isVideo(file)) return `<article class="library-card"><div class="file-icon">▤</div><div><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""}</small><a class="secondary file-link" href="${url}" target="_blank" rel="noopener">Open / download</a><button class="text-btn" data-edit-file="${file.id}">Rename / move</button></div></article>`;
-  return `<article class="library-card video-card"><video controls preload="metadata" playsinline src="${url}"${file.caption_stored_name ? `><track kind="captions" src="${fileUrl(file.caption_stored_name)}" srclang="en" label="Captions" default></video>` : "></video>"}<div class="video-meta"><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""} · Use the player menu for speed, volume, captions, and fullscreen.</small><button class="text-btn" data-edit-file="${file.id}">Rename / move</button></div></article>`;
+  if (!isVideo(file)) return `<article class="library-card"><div class="file-icon">▤</div><div><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""}</small><a class="secondary file-link" href="${url}" target="_blank" rel="noopener">Open / download</a><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
+  return `<article class="library-card video-card"><video controls preload="metadata" playsinline src="${url}"${file.caption_stored_name ? `><track kind="captions" src="${fileUrl(file.caption_stored_name)}" srclang="en" label="Captions" default></video>` : "></video>"}<div class="video-meta"><b>${esc(file.display_name || file.original_name)}</b><small>${esc(file.subject_name || "Uncategorized")}${file.topic_name ? ` · ${esc(file.topic_name)}` : ""} · Use the player menu for speed, volume, captions, and fullscreen.</small><button class="text-btn" data-edit-file="${file.id}">Rename / move</button><button class="danger-text" data-delete-personal-file="${file.id}">Delete</button></div></article>`;
 };
 async function loadPersonalFiles() {
   const files = await api("/api/personal-files");
@@ -223,7 +223,7 @@ async function openGroup(id) {
   if (state.socket.connected) joinGroup(); else state.socket.once("connect", joinGroup);
 }
 const messageHtml = m => `<div class="chat-message"><b>${esc(m.name)}</b><small>${fmtDate(m.created_at)}</small>${m.body ? `<p>${esc(m.body)}</p>` : ""}${m.file_stored_name ? `<a class="chat-attachment" href="/uploads/${encodeURIComponent(m.file_stored_name)}" target="_blank" rel="noopener">${esc(m.file_name)} · ${Math.ceil((m.file_size || 0) / 1024)} KB</a>${String(m.file_mime || "").startsWith("image/") ? `<img src="/uploads/${encodeURIComponent(m.file_stored_name)}" alt="${esc(m.file_name)}">` : ""}${String(m.file_mime || "").startsWith("video/") ? `<video controls src="/uploads/${encodeURIComponent(m.file_stored_name)}"></video>` : ""}` : ""}</div>`;
-const fileHtml = f => `<div class="member"><a href="/uploads/${encodeURIComponent(f.stored_name)}" target="_blank">${esc(f.original_name)}</a><small>${Math.ceil(f.size/1024)} KB</small></div>`;
+const fileHtml = f => `<div class="member"><a href="/uploads/${encodeURIComponent(f.stored_name)}" target="_blank">${esc(f.original_name)}</a><small>${Math.ceil(f.size/1024)} KB</small><button class="danger-text" data-delete-group-file="${f.id}">Delete</button></div>`;
 async function connectSocket() {
   if (state.socket?.connected) return state.socket;
   if (state.socket?.connectingPromise) return state.socket.connectingPromise;
@@ -274,6 +274,16 @@ document.addEventListener("click", async e => {
   const deleteLog = e.target.closest("[data-delete-log]");
   if (deleteLog && confirm("Delete this study log?")) {
     try { await api(`/api/study-logs/${deleteLog.dataset.deleteLog}`, { method:"DELETE" }); await Promise.all([loadDashboard(), loadAnalytics(), loadProgress()]); toast("Study log deleted"); }
+    catch (err) { toast(err.message, true); }
+  }
+  const deletePersonalFile = e.target.closest("[data-delete-personal-file]");
+  if (deletePersonalFile && confirm("Delete this uploaded file permanently?")) {
+    try { await api(`/api/personal-files/${deletePersonalFile.dataset.deletePersonalFile}`, { method:"DELETE" }); await loadPersonalFiles(); toast("File deleted"); }
+    catch (err) { toast(err.message, true); }
+  }
+  const deleteGroupFile = e.target.closest("[data-delete-group-file]");
+  if (deleteGroupFile && state.group && confirm("Delete this group file permanently?")) {
+    try { await api(`/api/groups/${state.group.group.id}/files/${deleteGroupFile.dataset.deleteGroupFile}`, { method:"DELETE" }); deleteGroupFile.closest(".member")?.remove(); toast("Group file deleted"); }
     catch (err) { toast(err.message, true); }
   }
   const subjectCard = e.target.closest("[data-open-subject]");
