@@ -91,7 +91,7 @@ async function loadPersonalFiles() {
   const subject = $("#file-subject"); subject.innerHTML = `<option value="">Choose subject</option>${state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}`;
   updateFileTopics();
 }
-function uploadWithStatus(url, form, statusElement, onSuccess) {
+async function uploadWithStatus(url, form, statusElement, onSuccess) {
   const files = [...form.querySelector('input[name="file"]').files];
   if (!files.length || files.length > 50) {
     toast(files.length > 50 ? "Choose no more than 50 files" : "Choose at least one file", true);
@@ -99,33 +99,40 @@ function uploadWithStatus(url, form, statusElement, onSuccess) {
   }
   statusElement.classList.remove("hidden");
   statusElement.innerHTML = `<div class="upload-summary"><b>Uploading ${files.length} file${files.length === 1 ? "" : "s"}...</b><span class="upload-percent">0%</span></div><div class="upload-progress"><i></i></div>${files.map((file, index) => `<div class="upload-file" data-upload-index="${index}"><span>${esc(file.name)}</span><b>Queued</b></div>`).join("")}`;
-  statusElement.querySelectorAll(".upload-file").forEach(item => { item.querySelector("b").textContent = "Uploading"; });
-  const request = new XMLHttpRequest();
-  request.open("POST", url);
-  const token = localStorage.getItem("atlas:auth-token");
-  if (token) request.setRequestHeader("Authorization", `Bearer ${token}`);
-  request.upload.onprogress = event => {
-    if (!event.lengthComputable) return;
-    const percent = Math.round(event.loaded / event.total * 100);
-    statusElement.querySelector(".upload-percent").textContent = `${percent}%`;
-    statusElement.querySelector(".upload-progress i").style.width = `${percent}%`;
-  };
-  request.onload = () => {
-    let data = {};
-    try { data = JSON.parse(request.responseText); } catch (_) {}
-    if (request.status < 200 || request.status >= 300) {
-      statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Failed"; item.className = "upload-failed"; });
-      toast(data.error || "Upload failed", true);
-      return;
+  const isGroup = url.includes("/groups/");
+  const bucket = isGroup ? "group-files" : "personal-files";
+  const owner = isGroup ? `groups/${url.split("/")[3]}` : `users/${state.user.id}`;
+  const metadataUrl = `${url}/metadata`;
+  const extra = Object.fromEntries(new FormData(form).entries());
+  const update = (index, text, className = "") => { const item = statusElement.querySelector(`[data-upload-index="${index}"] b`); if (item) { item.textContent = text; item.className = className; } };
+  const queue = [...files.entries()];
+  const results = [];
+  let completed = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const [index, file] = queue.shift();
+      try {
+        update(index, "Uploading");
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const objectPath = `${owner}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+        const uploaded = await supabaseClient.storage.from(bucket).upload(objectPath, file, { contentType: file.type || "application/octet-stream", upsert: false });
+        if (uploaded.error) throw uploaded.error;
+        const metadata = await api(metadataUrl, { method:"POST", body:JSON.stringify({ file: { original_name:file.name, storage_path:uploaded.data.path, storage_bucket:bucket, mime:file.type, size:file.size, display_name:files.length === 1 ? (extra.display_name || file.name) : file.name, folder:extra.folder || (isGroup ? "General" : "Personal"), subject_id:extra.subject_id || null, topic_id:extra.topic_id || null } }) });
+        results.push(metadata);
+        update(index, "Uploaded", "upload-success");
+      } catch (error) {
+        update(index, "Failed", "upload-failed");
+        toast(`${file.name}: ${error.message}`, true);
+      } finally {
+        completed++;
+        const percent = Math.round(completed / files.length * 100);
+        statusElement.querySelector(".upload-percent").textContent = `${percent}%`;
+        statusElement.querySelector(".upload-progress i").style.width = `${percent}%`;
+      }
     }
-    statusElement.querySelector(".upload-percent").textContent = "100%";
-    statusElement.querySelector(".upload-progress i").style.width = "100%";
-    statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Uploaded"; item.className = "upload-success"; });
-    toast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`);
-    onSuccess(Array.isArray(data) ? data : [data]);
   };
-  request.onerror = () => { statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Failed"; item.className = "upload-failed"; }); toast("Upload connection failed", true); };
-  request.send(new FormData(form));
+  await Promise.all(Array.from({ length: Math.min(6, files.length) }, worker));
+  if (results.length) { toast(`${results.length} of ${files.length} file${files.length === 1 ? "" : "s"} uploaded`); onSuccess(results); }
 }
 function updateFileTopics() {
   const subjectId = $("#file-subject").value;
