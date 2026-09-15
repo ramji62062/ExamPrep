@@ -1,6 +1,6 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const state = { user: null, subjects: [], logs: [], topics: {}, notes: {}, groups: [], timer: null, elapsed: 0, timerHandle: null, socket: null, group: null, sessionStarted: false, quoteHandle: null, dashboardRequest: 0 };
+const state = { user: null, subjects: [], logs: [], topics: {}, notes: {}, groups: [], timer: null, elapsed: 0, timerHandle: null, socket: null, group: null, sessionStarted: false, quoteHandle: null, syncHandle: null, dashboardRequest: 0 };
 const quotes = [["The secret of getting ahead is getting started.","Mark Twain"],["Great things are done by a series of small things brought together.","Vincent van Gogh"],["Success is the sum of small efforts, repeated day in and day out.","Robert Collier"],["You do not have to be extreme, just consistent.","Unknown"],["A little progress each day adds up to big results.","Unknown"]];
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmtDate = value => value ? new Date(value.replace(" ", "T") + (value.length === 10 ? "T00:00:00" : "")).toLocaleDateString(undefined, { month:"short", day:"numeric" }) : "—";
@@ -133,7 +133,7 @@ async function uploadWithStatus(url, form, statusElement, onSuccess) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(6, files.length) }, worker));
-  if (results.length) { toast(`${results.length} of ${files.length} file${files.length === 1 ? "" : "s"} uploaded`); onSuccess(results); }
+  if (results.length) { toast(`${results.length} of ${files.length} file${files.length === 1 ? "" : "s"} uploaded`); await onSuccess(results); }
 }
 function updateFileTopics() {
   const subjectId = $("#file-subject").value;
@@ -246,7 +246,7 @@ function startTicker(restart = true) {
   if (restart) state.elapsed = 0; clearInterval(state.timerHandle); $("#timer-start").classList.add("hidden"); $("#timer-stop").classList.remove("hidden"); $("#timer-status").textContent = "IN THE ZONE";
   const render = () => { const m = String(Math.floor(state.elapsed/60)).padStart(2,"0"), s = String(state.elapsed%60).padStart(2,"0"); if ($("#timer-display")) $("#timer-display").textContent = `${m}:${s}`; if ($(".timer-ring")) $(".timer-ring").style.background = `conic-gradient(var(--coral) ${Math.min(359,state.elapsed/1500*360)}deg,#f4eee6 0deg)`; };
   render();
-  state.timerHandle = setInterval(() => { state.elapsed++; render(); if (state.elapsed % 15 === 0 && state.timer) api("/api/timer/heartbeat", { method:"POST", body:JSON.stringify({ id:state.timer.id, seconds:state.elapsed }) }).then(result => { state.elapsed = Math.max(state.elapsed, result.seconds); }).catch(() => {}); }, 1000);
+  state.timerHandle = setInterval(() => { state.elapsed++; render(); if (state.elapsed % 10 === 0 && state.timer) api("/api/timer/heartbeat", { method:"POST", body:JSON.stringify({ id:state.timer.id, seconds:state.elapsed }) }).then(result => { state.elapsed = Math.max(state.elapsed, result.seconds); }).catch(() => {}); }, 1000);
 }
 async function stopTimer() { if (!state.timer) return; clearInterval(state.timerHandle); const timer = state.timer; try { await api("/api/timer/stop", { method:"POST", body:JSON.stringify({ id:timer.id, seconds:state.elapsed }) }); state.timer = null; state.sessionStarted = true; $("#timer-stop").classList.add("hidden"); $("#timer-start").classList.remove("hidden"); $("#timer-status").textContent = "SESSION SAVED"; toast("Focus session saved"); await Promise.all([loadDashboard(), loadAnalytics(), loadProgress()]); } catch (err) { startTicker(false); toast(`Could not save timer: ${err.message}`, true); } }
 async function loadGroups() { state.groups = await api("/api/groups"); $("#group-grid").innerHTML = state.groups.map(g => `<article class="group-card"><h3>${esc(g.name)}</h3><p>${esc(g.description || "A shared space for focused preparation.")}</p><span class="members">${g.member_count} member${g.member_count === 1 ? "" : "s"} · by ${esc(g.owner_name)}</span>${g.joined ? `<div class="group-actions"><button class="secondary" data-open-group="${g.id}">Open room →</button>${g.owner_id === state.user.id ? `<button class="danger-text" data-delete-group="${g.id}">Delete group</button><small class="muted">Invite code: ${esc(g.invite_code)}</small>` : ""}</div>` : `<button class="primary" data-join-group="${g.id}">Join group</button>`}</article>`).join("") || `<div class="empty-state">No groups yet. Create one and invite your study partners.</div>`; }
@@ -312,9 +312,13 @@ async function boot() {
 }
 window.addEventListener("beforeunload", () => {
   if (!state.timer) return;
-  fetch("/api/timer/close", { method:"POST", credentials:"same-origin", keepalive:true, headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id:state.timer.id, seconds:state.elapsed }) });
+  const headers = {"Content-Type":"application/json"};
+  const token = localStorage.getItem("atlas:auth-token");
+  if (token) headers.Authorization = `Bearer ${token}`;
+  fetch("/api/timer/close", { method:"POST", keepalive:true, headers, body:JSON.stringify({ id:state.timer.id, seconds:state.elapsed }) });
 });
-function showApp() { $("#auth-view").classList.add("hidden"); $("#app-view").classList.remove("hidden"); $("#user-name").textContent = `, ${state.user.name.split(" ")[0]}`; $("#avatar").textContent = state.user.name[0].toUpperCase(); $$(".admin-only").forEach(x => x.classList.toggle("hidden", state.user.role !== "admin")); rotateQuote(); clearInterval(state.quoteHandle); state.quoteHandle = setInterval(rotateQuote, 60000); const lastPage = localStorage.getItem(`atlas:last-page:${state.user.id}`); showPage(lastPage === "subject-detail" ? "overview" : (lastPage || "overview")); }
+function showApp() { $("#auth-view").classList.add("hidden"); $("#app-view").classList.remove("hidden"); $("#user-name").textContent = `, ${state.user.name.split(" ")[0]}`; $("#avatar").textContent = state.user.name[0].toUpperCase(); $$(".admin-only").forEach(x => x.classList.toggle("hidden", state.user.role !== "admin")); rotateQuote(); clearInterval(state.quoteHandle); state.quoteHandle = setInterval(rotateQuote, 60000); clearInterval(state.syncHandle); state.syncHandle = setInterval(() => { if (document.visibilityState === "visible") loadDashboard().then(() => { if (!$("#page-files").classList.contains("hidden")) loadPersonalFiles(); }).catch(() => {}); }, 20000); const lastPage = localStorage.getItem(`atlas:last-page:${state.user.id}`); showPage(lastPage === "subject-detail" ? "overview" : (lastPage || "overview")); }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.user) loadDashboard().catch(() => {}); });
 
 document.addEventListener("click", async e => {
   const sw = e.target.closest("[data-auth-switch]"); if (sw) { $("#login-form").classList.toggle("hidden", sw.dataset.authSwitch !== "login"); $("#register-form").classList.toggle("hidden", sw.dataset.authSwitch !== "register"); }
