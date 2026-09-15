@@ -1,6 +1,6 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const state = { user: null, subjects: [], logs: [], topics: {}, notes: {}, groups: [], timer: null, elapsed: 0, timerHandle: null, socket: null, group: null, sessionStarted: false, quoteHandle: null };
+const state = { user: null, subjects: [], logs: [], topics: {}, notes: {}, groups: [], timer: null, elapsed: 0, timerHandle: null, socket: null, group: null, sessionStarted: false, quoteHandle: null, dashboardRequest: 0 };
 const quotes = [["The secret of getting ahead is getting started.","Mark Twain"],["Great things are done by a series of small things brought together.","Vincent van Gogh"],["Success is the sum of small efforts, repeated day in and day out.","Robert Collier"],["You do not have to be extreme, just consistent.","Unknown"],["A little progress each day adds up to big results.","Unknown"]];
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmtDate = value => value ? new Date(value.replace(" ", "T") + (value.length === 10 ? "T00:00:00" : "")).toLocaleDateString(undefined, { month:"short", day:"numeric" }) : "—";
@@ -144,13 +144,16 @@ function renderLogs() {
   $("#log-preview").className = html ? "activity-list" : "empty-state"; $("#log-preview").innerHTML = html || "Your activity will appear here.";
 }
 async function loadDashboard() {
+  const requestId = ++state.dashboardRequest;
   const data = await api("/api/dashboard");
+  if (requestId !== state.dashboardRequest) return;
   state.subjects = Array.isArray(data.subjects) ? data.subjects : [];
   renderSubjects();
   const logsPromise = api("/api/study-logs").then(logs => { state.logs = Array.isArray(logs) ? logs : []; renderLogs(); }).catch(() => { state.logs = []; renderLogs(); });
   await Promise.all(state.subjects.map(async subject => {
     try {
       const subjectData = await api(`/api/subjects/${subject.id}/topics`);
+      if (requestId !== state.dashboardRequest) return;
       state.topics[subject.id] = subjectData.topics || [];
       state.notes[subject.id] = subjectData.notes || [];
     } catch (_) {
@@ -158,6 +161,7 @@ async function loadDashboard() {
       state.notes[subject.id] = [];
     }
   }));
+  if (requestId !== state.dashboardRequest) return;
   renderSubjects(); renderLogs();
   await logsPromise;
   $("#week-minutes").textContent = data.weekMinutes; $("#subject-count").textContent = `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"}`;
@@ -344,10 +348,10 @@ document.addEventListener("click", async e => {
   }
   const addTopic = e.target.closest("[data-add-topic]"); if (addTopic) {
     const name = prompt(addTopic.dataset.parentTopic ? "Subtopic name" : "Topic name");
-    if (name?.trim()) try { await api(`/api/subjects/${addTopic.dataset.addTopic}/topics`, { method:"POST", body:JSON.stringify({ name, parent_id:addTopic.dataset.parentTopic || null }) }); toast("Syllabus item added"); loadDashboard(); } catch (err) { toast(err.message, true); }
+    if (name?.trim()) try { await api(`/api/subjects/${addTopic.dataset.addTopic}/topics`, { method:"POST", body:JSON.stringify({ name, parent_id:addTopic.dataset.parentTopic || null }) }); await loadDashboard(); toast("Syllabus item added"); } catch (err) { toast(err.message, true); }
   }
   const deleteTopic = e.target.closest("[data-delete-topic]"); if (deleteTopic && confirm("Delete this topic and its subtopics?")) {
-    try { await api(`/api/subjects/${deleteTopic.dataset.deleteTopic}/topics/${deleteTopic.dataset.topicId}`, { method:"DELETE" }); toast("Syllabus item removed"); loadDashboard(); } catch (err) { toast(err.message, true); }
+    try { await api(`/api/subjects/${deleteTopic.dataset.deleteTopic}/topics/${deleteTopic.dataset.topicId}`, { method:"DELETE" }); await loadDashboard(); toast("Syllabus item removed"); } catch (err) { toast(err.message, true); }
   }
   const task = e.target.closest("[data-task]"); if (task) { await api(`/api/admin/tasks/${task.dataset.task}`, {method:"PATCH",body:JSON.stringify({done:+task.dataset.done})}); loadAdmin(); }
   const goal = e.target.closest("[data-goal]"); if (goal) { await api(`/api/admin/goals/${goal.dataset.goal}`, {method:"PATCH",body:JSON.stringify({done:+goal.dataset.done})}); loadAdmin(); }
@@ -361,7 +365,7 @@ $$("[data-auth]").forEach(form => form.addEventListener("submit", async e => { e
   if (result.error) throw result.error; if (!result.data.session) throw new Error("Check your email to confirm your account");
   localStorage.setItem("atlas:auth-token", result.data.session.access_token); const me = await api("/api/me"); state.user = me.user; showApp();
 } catch (err) { toast(err.message,true); } }));
-$("#subject-form").addEventListener("submit", async e => { e.preventDefault(); const f = formData(e.target); const id = f.id; delete f.id; try { await api(id ? `/api/subjects/${id}` : "/api/subjects", {method:id?"PUT":"POST",body:JSON.stringify(f)}); $("#subject-dialog").close(); toast("Syllabus updated"); loadDashboard(); } catch(err) { toast(err.message,true); } });
+$("#subject-form").addEventListener("submit", async e => { e.preventDefault(); const f = formData(e.target); const id = f.id; delete f.id; try { const saved = await api(id ? `/api/subjects/${id}` : "/api/subjects", {method:id?"PUT":"POST",body:JSON.stringify(f)}); if (id) state.subjects = state.subjects.map(subject => subject.id == saved.id ? saved : subject); else state.subjects = [saved, ...state.subjects]; renderSubjects(); $("#subject-dialog").close(); await loadDashboard(); toast("Syllabus updated"); } catch(err) { toast(err.message,true); } });
 $("#log-form").addEventListener("submit", async e => { e.preventDefault(); try { await api("/api/study-logs",{method:"POST",body:JSON.stringify(formData(e.target))}); $("#log-dialog").close(); toast("Study time logged"); loadDashboard(); } catch(err){toast(err.message,true);} });
 $("#personal-file-form").addEventListener("submit", async e => {
   e.preventDefault();
