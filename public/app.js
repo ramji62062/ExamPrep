@@ -91,6 +91,42 @@ async function loadPersonalFiles() {
   const subject = $("#file-subject"); subject.innerHTML = `<option value="">Choose subject</option>${state.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}`;
   updateFileTopics();
 }
+function uploadWithStatus(url, form, statusElement, onSuccess) {
+  const files = [...form.querySelector('input[name="file"]').files];
+  if (!files.length || files.length > 50) {
+    toast(files.length > 50 ? "Choose no more than 50 files" : "Choose at least one file", true);
+    return;
+  }
+  statusElement.classList.remove("hidden");
+  statusElement.innerHTML = `<div class="upload-summary"><b>Uploading ${files.length} file${files.length === 1 ? "" : "s"}...</b><span class="upload-percent">0%</span></div><div class="upload-progress"><i></i></div>${files.map((file, index) => `<div class="upload-file" data-upload-index="${index}"><span>${esc(file.name)}</span><b>Queued</b></div>`).join("")}`;
+  statusElement.querySelectorAll(".upload-file").forEach(item => { item.querySelector("b").textContent = "Uploading"; });
+  const request = new XMLHttpRequest();
+  request.open("POST", url);
+  const token = localStorage.getItem("atlas:auth-token");
+  if (token) request.setRequestHeader("Authorization", `Bearer ${token}`);
+  request.upload.onprogress = event => {
+    if (!event.lengthComputable) return;
+    const percent = Math.round(event.loaded / event.total * 100);
+    statusElement.querySelector(".upload-percent").textContent = `${percent}%`;
+    statusElement.querySelector(".upload-progress i").style.width = `${percent}%`;
+  };
+  request.onload = () => {
+    let data = {};
+    try { data = JSON.parse(request.responseText); } catch (_) {}
+    if (request.status < 200 || request.status >= 300) {
+      statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Failed"; item.className = "upload-failed"; });
+      toast(data.error || "Upload failed", true);
+      return;
+    }
+    statusElement.querySelector(".upload-percent").textContent = "100%";
+    statusElement.querySelector(".upload-progress i").style.width = "100%";
+    statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Uploaded"; item.className = "upload-success"; });
+    toast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`);
+    onSuccess(Array.isArray(data) ? data : [data]);
+  };
+  request.onerror = () => { statusElement.querySelectorAll(".upload-file b").forEach(item => { item.textContent = "Failed"; item.className = "upload-failed"; }); toast("Upload connection failed", true); };
+  request.send(new FormData(form));
+}
 function updateFileTopics() {
   const subjectId = $("#file-subject").value;
   $("#file-topic").innerHTML = `<option value="">Optional topic</option>${(state.topics[subjectId] || []).map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}`;
@@ -164,7 +200,7 @@ async function stopTimer() { if (!state.timer) return; clearInterval(state.timer
 async function loadGroups() { state.groups = await api("/api/groups"); $("#group-grid").innerHTML = state.groups.map(g => `<article class="group-card"><h3>${esc(g.name)}</h3><p>${esc(g.description || "A shared space for focused preparation.")}</p><span class="members">${g.member_count} member${g.member_count === 1 ? "" : "s"} · by ${esc(g.owner_name)}</span>${g.joined ? `<div class="group-actions"><button class="secondary" data-open-group="${g.id}">Open room →</button>${g.owner_id === state.user.id ? `<button class="danger-text" data-delete-group="${g.id}">Delete group</button><small class="muted">Invite code: ${esc(g.invite_code)}</small>` : ""}</div>` : `<button class="primary" data-join-group="${g.id}">Join group</button>`}</article>`).join("") || `<div class="empty-state">No groups yet. Create one and invite your study partners.</div>`; }
 async function openGroup(id) {
   const data = await api(`/api/groups/${id}`); state.group = data; $("#group-grid").classList.add("hidden"); const room = $("#group-room"); room.classList.remove("hidden");
-  room.innerHTML = `<section class="chat-panel"><div class="chat-head"><div><span class="eyebrow">STUDY ROOM</span><h3>${esc(data.group.name)}</h3></div><button class="text-btn" id="close-room">← All groups</button></div><div id="chat-messages" class="chat-messages">${data.messages.map(messageHtml).join("")}</div><form id="chat-form" class="chat-form"><input name="body" placeholder="Message, emoji, or attach a file…" autocomplete="off"><input name="file" type="file" class="chat-file" accept="*/*"><button class="primary">Send</button></form></section><section class="panel members-panel"><div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${data.members.length} members</h3></div></div>${data.members.map(m => `<div class="member"><span>${esc(m.name)}${m.id===state.user.id ? " (you)" : ""}</span><small>${m.role}</small></div>`).join("")}<hr><form id="file-form"><label>Share a file<input type="file" name="file" required></label><input name="folder" placeholder="Folder (e.g. Notes)" value="General"><button class="secondary full">Upload</button></form><div id="file-list">${data.files.map(fileHtml).join("")}</div></section>`;
+  room.innerHTML = `<section class="chat-panel"><div class="chat-head"><div><span class="eyebrow">STUDY ROOM</span><h3>${esc(data.group.name)}</h3></div><button class="text-btn" id="close-room">← All groups</button></div><div id="chat-messages" class="chat-messages">${data.messages.map(messageHtml).join("")}</div><form id="chat-form" class="chat-form"><input name="body" placeholder="Message, emoji, or attach a file…" autocomplete="off"><input name="file" type="file" class="chat-file" accept="*/*"><button class="primary">Send</button></form></section><section class="panel members-panel"><div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${data.members.length} members</h3></div></div>${data.members.map(m => `<div class="member"><span>${esc(m.name)}${m.id===state.user.id ? " (you)" : ""}</span><small>${m.role}</small></div>`).join("")}<hr><form id="file-form"><label>Share up to 50 files<input type="file" name="file" multiple required></label><input name="folder" placeholder="Folder (e.g. Notes)" value="General"><button class="secondary full">Upload files</button></form><div id="group-upload-status" class="upload-status hidden"></div><div id="file-list">${data.files.map(fileHtml).join("")}</div></section>`;
   $("#close-room").onclick = () => { room.classList.add("hidden"); $("#group-grid").classList.remove("hidden"); state.group = null; };
   $("#chat-form").onsubmit = async e => {
     e.preventDefault();
@@ -181,7 +217,7 @@ async function openGroup(id) {
     state.socket.emit("chat:message", { groupId:id, body }, error => { if (error) toast(error, true); });
     e.target.reset();
   };
-  $("#file-form").onsubmit = async e => { e.preventDefault(); try { const result = await api(`/api/groups/${id}/files`, { method:"POST", body:new FormData(e.target) }); $("#file-list").insertAdjacentHTML("afterbegin", fileHtml(result)); e.target.reset(); toast("File shared"); } catch (err) { toast(err.message, true); } };
+  $("#file-form").onsubmit = e => { e.preventDefault(); uploadWithStatus(`/api/groups/${id}/files`, e.target, $("#group-upload-status"), results => { results.forEach(result => $("#file-list").insertAdjacentHTML("afterbegin", fileHtml(result))); e.target.reset(); }); };
   await connectSocket();
   const joinGroup = () => state.socket.emit("group:join", id);
   if (state.socket.connected) joinGroup(); else state.socket.once("connect", joinGroup);
@@ -306,8 +342,7 @@ $("#subject-form").addEventListener("submit", async e => { e.preventDefault(); c
 $("#log-form").addEventListener("submit", async e => { e.preventDefault(); try { await api("/api/study-logs",{method:"POST",body:JSON.stringify(formData(e.target))}); $("#log-dialog").close(); toast("Study time logged"); loadDashboard(); } catch(err){toast(err.message,true);} });
 $("#personal-file-form").addEventListener("submit", async e => {
   e.preventDefault();
-  try { await api("/api/personal-files", { method:"POST", body:new FormData(e.target) }); e.target.reset(); toast("File added to your library"); loadPersonalFiles(); }
-  catch (err) { toast(err.message, true); }
+  uploadWithStatus("/api/personal-files", e.target, $("#personal-upload-status"), () => { e.target.reset(); loadPersonalFiles(); });
 });
 $("#file-subject").addEventListener("change", updateFileTopics);
 $("#group-form").addEventListener("submit", async e => { e.preventDefault(); try { const group = await api("/api/groups",{method:"POST",body:JSON.stringify(formData(e.target))}); $("#group-dialog").close(); toast(`Group created. Invite code: ${group.invite_code}`); loadGroups(); } catch(err){toast(err.message,true);} });
