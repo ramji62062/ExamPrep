@@ -40,7 +40,13 @@ for (const method of ["get", "post", "put", "patch", "delete"]) {
   app[method] = (route, ...handlers) => register(route, ...handlers.map(handler => handler.length < 4 ? asyncRoute(handler) : handler));
 }
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
-app.get("/api/config", (req, res) => res.json({ supabaseUrl: url, supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, redirectUrl: process.env.NEXT_PUBLIC_SUPABASE_REDIRECT_URL || `${req.protocol}://${req.get("host")}/` }));
+app.get("/api/config", (req, res) => {
+  const configuredRedirect = process.env.NEXT_PUBLIC_SUPABASE_REDIRECT_URL;
+  const redirectUrl = configuredRedirect && !/localhost|127\.0\.0\.1/.test(configuredRedirect)
+    ? configuredRedirect
+    : `${req.protocol}://${req.get("host")}/`;
+  res.json({ supabaseUrl: url, supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, redirectUrl });
+});
 app.post("/api/auth/register", async (req, res) => { const { name, email, password } = req.body; if (!name || !email || !password || password.length < 6) return res.status(400).json({ error: "Name, email and a 6+ character password are required" }); const { data, error } = await supabase.auth.admin.createUser({ email: email.toLowerCase(), password, email_confirm: true, user_metadata: { name } }); if (error) return res.status(400).json({ error: error.message }); const login = await supabase.auth.signInWithPassword({ email, password }); if (login.error) return res.status(400).json({ error: login.error.message }); res.json({ user: await profile(data.user), token: login.data.session.access_token }); });
 app.post("/api/auth/login", async (req, res) => { const { data, error } = await supabase.auth.signInWithPassword({ email: String(req.body.email || "").toLowerCase(), password: req.body.password || "" }); if (error || !data.user) return res.status(401).json({ error: error?.message || "Invalid email or password" }); res.json({ user: await profile(data.user), token: data.session.access_token }); });
 app.post("/api/auth/logout", (_req, res) => res.json({ ok: true })); app.get("/api/me", auth, (req, res) => res.json({ user: req.user })); app.get("/api/socket-token", auth, (req, res) => res.json({ token: req.headers.authorization.slice(7) }));
