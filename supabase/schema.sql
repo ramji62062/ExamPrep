@@ -66,7 +66,8 @@ create policy "users can manage own warrants" on warrants for all using (user_id
 
 insert into storage.buckets (id, name, public)
 values ('personal-files', 'personal-files', true), ('group-files', 'group-files', true)
-on conflict (id) do nothing;
+on conflict (id) do update set public = true, file_size_limit = 262144000;
+update storage.buckets set file_size_limit = 262144000 where id in ('personal-files', 'group-files');
 
 create policy "authenticated users can upload personal files" on storage.objects for insert to authenticated with check (bucket_id = 'personal-files' and (storage.foldername(name))[1] = 'users' and (storage.foldername(name))[2] = auth.uid()::text);
 create policy "authenticated users can read personal files" on storage.objects for select to authenticated using (bucket_id = 'personal-files' and (storage.foldername(name))[1] = 'users' and (storage.foldername(name))[2] = auth.uid()::text);

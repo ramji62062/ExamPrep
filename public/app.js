@@ -115,8 +115,9 @@ async function uploadWithStatus(url, form, statusElement, onSuccess) {
         update(index, "Uploading");
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const objectPath = `${owner}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
-        const uploaded = await supabaseClient.storage.from(bucket).upload(objectPath, file, { contentType: file.type || "application/octet-stream", upsert: false });
-        if (uploaded.error) throw uploaded.error;
+        const uploaded = await uploadStorageFile(bucket, objectPath, file, bytes => {
+          update(index, `Uploading ${Math.round(bytes / file.size * 100)}%`);
+        });
         const metadata = await api(metadataUrl, { method:"POST", body:JSON.stringify({ file: { original_name:file.name, storage_path:uploaded.data.path, storage_bucket:bucket, mime:file.type, size:file.size, display_name:files.length === 1 ? (extra.display_name || file.name) : file.name, folder:extra.folder || (isGroup ? "General" : "Personal"), subject_id:extra.subject_id || null, topic_id:extra.topic_id || null } }) });
         results.push(metadata);
         update(index, "Uploaded", "upload-success");
@@ -137,6 +138,33 @@ async function uploadWithStatus(url, form, statusElement, onSuccess) {
 function updateFileTopics() {
   const subjectId = $("#file-subject").value;
   $("#file-topic").innerHTML = `<option value="">Optional topic</option>${(state.topics[subjectId] || []).map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}`;
+}
+async function uploadStorageFile(bucket, objectPath, file, onProgress) {
+  if (file.size <= 6 * 1024 * 1024) {
+    const result = await supabaseClient.storage.from(bucket).upload(objectPath, file, { contentType: file.type || "application/octet-stream", upsert: false });
+    if (result.error) throw result.error;
+    onProgress(file.size);
+    return result.data;
+  }
+  const base = `${supabaseClient.supabaseUrl}/storage/v1/upload/resumable`;
+  const token = (await supabaseClient.auth.getSession()).data.session?.access_token;
+  if (!token) throw new Error("Your login session expired. Sign in again.");
+  const metadata = [`bucketName ${btoa(bucket)}`, `objectName ${btoa(objectPath)}`, `contentType ${btoa(file.type || "application/octet-stream")}`].join(",");
+  const create = await fetch(base, { method:"POST", headers:{ Authorization:`Bearer ${token}`, "x-upsert":"false", "Tus-Resumable":"1.0.0", "Upload-Length":String(file.size), "Upload-Metadata":metadata } });
+  if (!create.ok) throw new Error(await create.text() || `Resumable upload failed (${create.status})`);
+  let location = create.headers.get("Location");
+  if (location?.startsWith("/")) location = `${supabaseClient.supabaseUrl}${location}`;
+  if (!location) throw new Error("Storage did not return an upload session");
+  const chunkSize = 6 * 1024 * 1024;
+  let offset = 0;
+  while (offset < file.size) {
+    const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+    const response = await fetch(location, { method:"PATCH", headers:{ Authorization:`Bearer ${token}`, "Tus-Resumable":"1.0.0", "Upload-Offset":String(offset), "Content-Type":"application/offset+octet-stream" }, body:chunk });
+    if (!response.ok) throw new Error(await response.text() || `Chunk upload failed (${response.status})`);
+    offset = Number(response.headers.get("Upload-Offset")) || offset + chunk.size;
+    onProgress(offset);
+  }
+  return { path: objectPath };
 }
 function renderSubjects() {
   const topicTree = (subjectId, parentId = null) => (state.topics[subjectId] || []).filter(t => (t.parent_id || null) === parentId).map(t => `<li><div class="topic-line"><span>${esc(t.name)}</span><span class="topic-actions">${t.progress}% <button data-add-topic="${subjectId}" data-parent-topic="${t.id}">+ subtopic</button><button data-delete-topic="${subjectId}" data-topic-id="${t.id}">×</button></span></div>${topicTree(subjectId, t.id)}</li>`).join("");
