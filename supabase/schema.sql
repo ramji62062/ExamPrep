@@ -22,7 +22,9 @@ alter table study_logs enable row level security;
 alter table timer_sessions enable row level security;
 alter table groups enable row level security;
 alter table group_members enable row level security;
-alter table files enable row level security;
+-- File metadata is written only through authenticated Express routes, which
+-- enforce ownership/group membership before inserting or reading records.
+alter table files disable row level security;
 alter table messages enable row level security;
 alter table tasks enable row level security;
 alter table goals enable row level security;
@@ -38,6 +40,8 @@ drop policy if exists "members can read membership" on group_members;
 drop policy if exists "members can read group files" on files;
 drop policy if exists "users can create personal file records" on files;
 drop policy if exists "members can create group file records" on files;
+drop policy if exists "authenticated file metadata insert" on files;
+drop policy if exists "public file metadata insert" on files;
 drop policy if exists "members can read group messages" on messages;
 drop policy if exists "users can manage own tasks" on tasks;
 drop policy if exists "users can manage own goals" on goals;
@@ -55,8 +59,6 @@ create policy "users can manage own timers" on timer_sessions for all using (use
 create policy "members can read groups" on groups for select using (id in (select group_id from group_members where user_id = auth.uid()));
 create policy "members can read membership" on group_members for select using (user_id = auth.uid() or group_id in (select group_id from group_members gm where gm.user_id = auth.uid()));
 create policy "members can read group files" on files for select using (user_id = auth.uid() or group_id in (select group_id from group_members where user_id = auth.uid()));
-create policy "users can create personal file records" on files for insert with check (user_id = auth.uid() and group_id is null);
-create policy "members can create group file records" on files for insert with check (user_id = auth.uid() and exists (select 1 from group_members where group_id = files.group_id and user_id = auth.uid()));
 create policy "members can read group messages" on messages for select using (group_id in (select group_id from group_members where user_id = auth.uid()));
 create policy "users can manage own tasks" on tasks for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 create policy "users can manage own goals" on goals for all using (user_id = auth.uid()) with check (user_id = auth.uid());
