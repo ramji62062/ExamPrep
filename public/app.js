@@ -449,32 +449,278 @@ async function loadGroups() {
 }
 
 async function openGroup(id) {
-  const data = await api(`/api/groups/${id}`); state.group = data; $("#group-grid").classList.add("hidden"); const room = $("#group-room"); room.classList.remove("hidden");
-  room.innerHTML = `<section class="chat-panel"><div class="chat-head"><div><span class="eyebrow">STUDY ROOM</span><h3>${esc(data.group.name)}</h3></div><button class="text-btn" id="close-room">← All groups</button></div><div id="chat-messages" class="chat-messages">${data.messages.map(messageHtml).join("")}</div><form id="chat-form" class="chat-form"><input name="body" placeholder="Message, emoji, or attach a file…" autocomplete="off"><input name="file" type="file" class="chat-file" accept="*/*"><button class="primary">Send</button></form></section><section class="panel members-panel"><div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${data.members.length} members</h3></div></div>${data.members.map(m => `<div class="member"><span>${esc(m.name)}${m.id===state.user.id ? " (you)" : ""}</span><small>${m.role}</small></div>`).join("")}<hr><form id="file-form"><label>Share up to 50 files<input type="file" name="file" multiple required></label><input name="folder" placeholder="Folder (e.g. Notes)" value="General"><button class="secondary full">Upload files</button></form><div id="group-upload-status" class="upload-status hidden"></div><div id="file-list">${data.files.map(fileHtml).join("")}</div></section>`;
-  $("#close-room").onclick = () => { room.classList.add("hidden"); $("#group-grid").classList.remove("hidden"); state.group = null; };
+  const room = $("#group-room");
+  room.innerHTML = '<div class="room-loading"><p class="muted tiny">Opening room…</p></div>';
+  room.classList.remove("hidden");
+  $("#group-grid").classList.add("hidden");
+
+  let data;
+  try {
+    data = await api(`/api/groups/${id}`);
+  } catch (err) {
+    room.innerHTML = `<div class="room-error"><p class="muted">Could not open room: ${esc(err.message)}</p><button class="text-btn" id="close-room-err">← Back</button></div>`;
+    $("#close-room-err").onclick = () => { room.classList.add("hidden"); $("#group-grid").classList.remove("hidden"); };
+    return;
+  }
+  state.group = data;
+  const isAdmin = data.role === "admin" || data.group.owner_id === state.user.id;
+
+  // ── Build task panel HTML ──────────────────────────────────────────────────
+  const taskItemHtml = t => `
+    <div class="group-task ${t.done ? "done" : ""}" data-task-id="${t.id}">
+      <div class="group-task-head">
+        <span class="group-task-title">${esc(t.title)}</span>
+        ${isAdmin ? `<span class="group-task-actions">
+          <button class="text-btn" data-task-done="${t.id}" data-task-current="${t.done ? 1 : 0}">${t.done ? "Reopen" : "Mark done"}</button>
+          <button class="danger-text" data-task-delete="${t.id}">×</button>
+        </span>` : ""}
+      </div>
+      ${t.description ? `<p class="group-task-desc">${esc(t.description)}</p>` : ""}
+      <div class="group-task-meta">
+        ${t.assigned_name ? `<span class="task-assignee">→ ${esc(t.assigned_name)}</span>` : "<span class='muted tiny'>Unassigned</span>"}
+        ${t.due_date ? `<span class="task-due ${new Date(t.due_date) < new Date() && !t.done ? "overdue" : ""}">Due ${fmtDate(t.due_date)}</span>` : ""}
+      </div>
+    </div>`;
+
+  const tasksHtml = (data.tasks || []).map(taskItemHtml).join("") || `<p class="empty-state tiny">No tasks yet.</p>`;
+  const memberOptions = data.members.map(m => `<option value="${m.user_id}">${esc(m.name)}</option>`).join("");
+
+  const taskPanelHtml = `
+    <div class="tasks-section">
+      <div class="panel-head"><div><span class="eyebrow">ASSIGNMENTS</span><h4>Tasks</h4></div>${isAdmin ? `<button class="text-btn" id="toggle-task-form">＋ Assign</button>` : ""}</div>
+      ${isAdmin ? `
+      <form id="group-task-form" class="group-task-form hidden">
+        <input name="title" placeholder="Task title" required>
+        <textarea name="description" placeholder="Details (optional)" rows="2"></textarea>
+        <select name="assigned_to"><option value="">Assign to… (optional)</option>${memberOptions}</select>
+        <input name="due_date" type="date">
+        <button class="secondary full">＋ Assign task</button>
+      </form>` : ""}
+      <div id="task-list">${tasksHtml}</div>
+    </div>`;
+
+  // ── Build room HTML ────────────────────────────────────────────────────────
+  room.innerHTML = `
+    <section class="chat-panel">
+      <div class="chat-head">
+        <div><span class="eyebrow">STUDY ROOM</span><h3>${esc(data.group.name)}</h3></div>
+        <button class="text-btn" id="close-room">← All groups</button>
+      </div>
+      <div id="chat-messages" class="chat-messages">${data.messages.map(messageHtml).join("")}</div>
+      <div class="chat-input-area">
+        <div id="chat-upload-progress" class="chat-upload-bar hidden"><i></i><span>Uploading…</span></div>
+        <form id="chat-form" class="chat-form">
+          <label class="chat-attach" title="Attach file (video, audio, PDF, image, anything)">
+            📎<input id="chat-file" type="file" accept="*/*" style="display:none">
+          </label>
+          <span id="chat-file-name" class="chat-file-name muted tiny hidden"></span>
+          <input name="body" id="chat-body" placeholder="Message, emoji, or 📎 a file…" autocomplete="off">
+          <button class="primary" id="chat-send">Send</button>
+        </form>
+      </div>
+    </section>
+    <section class="panel members-panel">
+      <div class="panel-head"><div><span class="eyebrow">PEOPLE</span><h3>${data.members.length} members</h3></div></div>
+      <div class="member-list">
+        ${data.members.map(m => `<div class="member"><span>${esc(m.name)}${m.user_id === state.user.id ? " (you)" : ""}</span><small>${m.role}</small>${isAdmin && m.user_id !== state.user.id ? `<button class="danger-text tiny" data-kick-member="${m.user_id}">Remove</button>` : ""}</div>`).join("")}
+      </div>
+      ${isAdmin ? `<div class="invite-code-row"><small class="muted tiny">Invite code: <b>${esc(data.group.invite_code)}</b></small></div>` : ""}
+      <hr>
+      ${taskPanelHtml}
+      <hr>
+      <form id="file-form" class="file-upload-section">
+        <div class="panel-head" style="margin-bottom:8px"><div><span class="eyebrow">FILES</span><h4>Shared library</h4></div></div>
+        <label>Share files (video, audio, PDF, anything)
+          <input type="file" name="file" multiple required>
+        </label>
+        <input name="folder" placeholder="Folder name (e.g. Notes)" value="General">
+        <button class="secondary full">Upload files</button>
+      </form>
+      <div id="group-upload-status" class="upload-status hidden"></div>
+      <div id="file-list">${data.files.map(fileHtml).join("") || '<p class="empty-state tiny">No shared files yet.</p>'}</div>
+    </section>`;
+
+  // Scroll chat to bottom
+  const chatEl = $("#chat-messages");
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  // ── Wire up close ──────────────────────────────────────────────────────────
+  $("#close-room").onclick = () => {
+    room.classList.add("hidden");
+    $("#group-grid").classList.remove("hidden");
+    state.group = null;
+    if (state.socket) state.socket.emit("group:leave", id);
+  };
+
+  // ── Wire up member kick ────────────────────────────────────────────────────
+  room.addEventListener("click", async e => {
+    const kick = e.target.closest("[data-kick-member]");
+    if (kick && confirm("Remove this member from the group?")) {
+      try { await api(`/api/groups/${id}/members/${kick.dataset.kickMember}`, { method: "DELETE" }); kick.closest(".member").remove(); toast("Member removed"); }
+      catch (err) { toast(err.message, true); }
+    }
+
+    // Task mark done / reopen
+    const taskDone = e.target.closest("[data-task-done]");
+    if (taskDone) {
+      const newDone = taskDone.dataset.taskCurrent === "1" ? false : true;
+      try {
+        await api(`/api/groups/${id}/tasks/${taskDone.dataset.taskDone}`, { method: "PATCH", body: JSON.stringify({ done: newDone }) });
+        // The socket event will update UI; do optimistic update too
+        const el = room.querySelector(`[data-task-id="${taskDone.dataset.taskDone}"]`);
+        if (el) { el.classList.toggle("done", newDone); taskDone.dataset.taskCurrent = newDone ? "1" : "0"; taskDone.textContent = newDone ? "Reopen" : "Mark done"; }
+        toast(newDone ? "Task marked done" : "Task reopened");
+      } catch (err) { toast(err.message, true); }
+    }
+
+    // Task delete
+    const taskDel = e.target.closest("[data-task-delete]");
+    if (taskDel && confirm("Delete this task?")) {
+      try {
+        await api(`/api/groups/${id}/tasks/${taskDel.dataset.taskDelete}`, { method: "DELETE" });
+        taskDel.closest(".group-task")?.remove();
+        toast("Task deleted");
+      } catch (err) { toast(err.message, true); }
+    }
+
+    // Delete group file
+    const deleteFile = e.target.closest("[data-delete-group-file]");
+    if (deleteFile && confirm("Delete this file permanently?")) {
+      try { await api(`/api/groups/${id}/files/${deleteFile.dataset.deleteGroupFile}`, { method: "DELETE" }); deleteFile.closest(".file-row")?.remove(); toast("File deleted"); }
+      catch (err) { toast(err.message, true); }
+    }
+  });
+
+  // ── Task form toggle & submit ──────────────────────────────────────────────
+  if (isAdmin) {
+    $("#toggle-task-form").onclick = () => $("#group-task-form").classList.toggle("hidden");
+    $("#group-task-form").onsubmit = async e => {
+      e.preventDefault();
+      const fd = Object.fromEntries(new FormData(e.target).entries());
+      try {
+        const task = await api(`/api/groups/${id}/tasks`, { method: "POST", body: JSON.stringify(fd) });
+        const list = $("#task-list");
+        const empty = list.querySelector(".empty-state");
+        if (empty) empty.remove();
+        list.insertAdjacentHTML("afterbegin", taskItemHtml(task));
+        e.target.reset(); $("#group-task-form").classList.add("hidden"); toast("Task assigned");
+      } catch (err) { toast(err.message, true); }
+    };
+  }
+
+  // ── Chat file picker ───────────────────────────────────────────────────────
+  let pendingChatFile = null;
+  $("#chat-file").onchange = () => {
+    pendingChatFile = $("#chat-file").files[0] || null;
+    const nameEl = $("#chat-file-name");
+    if (pendingChatFile) { nameEl.textContent = `📎 ${pendingChatFile.name}`; nameEl.classList.remove("hidden"); }
+    else nameEl.classList.add("hidden");
+  };
+
+  // ── Chat form submit ───────────────────────────────────────────────────────
   $("#chat-form").onsubmit = async e => {
     e.preventDefault();
-    const payload = new FormData(e.target);
-    const body = String(payload.get("body") || "").trim();
-    const attachment = payload.get("file");
-    if (attachment?.size) {
-      try { await api(`/api/groups/${id}/messages`, { method:"POST", body:payload }); e.target.reset(); toast("Message shared"); }
-      catch (err) { toast(err.message, true); }
-      return;
-    }
-    if (!body) return;
-    if (!state.socket?.connected) return toast("Chat is connecting. Try again in a moment.", true);
-    state.socket.emit("chat:message", { groupId:id, body }, error => { if (error) toast(error, true); });
-    e.target.reset();
+    const body = String($("#chat-body").value || "").trim();
+    if (!body && !pendingChatFile) return;
+    const sendBtn = $("#chat-send");
+    sendBtn.disabled = true;
+
+    try {
+      let file_id = null;
+      if (pendingChatFile) {
+        // Upload file to R2 (or Supabase), then create file record, then attach to message
+        const prog = $("#chat-upload-progress");
+        prog.classList.remove("hidden");
+        const progressBar = prog.querySelector("i");
+        const label = prog.querySelector("span");
+
+        const bucket = "group-files";
+        const objectPath = `groups/${id}/${Date.now()}-${crypto.randomUUID()}-${pendingChatFile.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+        const uploaded = await uploadFileToStorage(bucket, objectPath, pendingChatFile, bytes => {
+          const pct = Math.round(bytes / pendingChatFile.size * 100);
+          progressBar.style.width = `${pct}%`;
+          label.textContent = `Uploading ${pct}%…`;
+        }, null);
+        prog.classList.add("hidden");
+
+        // Create the file record in DB
+        const fileRecord = await api(`/api/groups/${id}/files/metadata`, { method: "POST", body: JSON.stringify({ file: { original_name: pendingChatFile.name, storage_path: uploaded.path, storage_bucket: uploaded.bucket, mime: pendingChatFile.type, size: pendingChatFile.size, folder: "Chat" } }) });
+        file_id = fileRecord.id;
+      }
+
+      const msg = await api(`/api/groups/${id}/messages`, { method: "POST", body: JSON.stringify({ body, file_id }) });
+      // Don't double-render if socket already delivered it
+      if (!room.querySelector(`[data-msg-id="${msg.id}"]`)) {
+        chatEl.insertAdjacentHTML("beforeend", messageHtml(msg));
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+      e.target.reset();
+      pendingChatFile = null;
+      $("#chat-file-name").classList.add("hidden");
+    } catch (err) { toast(err.message, true); }
+    finally { sendBtn.disabled = false; }
   };
-  $("#file-form").onsubmit = e => { e.preventDefault(); uploadWithStatus(`/api/groups/${id}/files`, e.target, $("#group-upload-status"), results => { results.forEach(result => $("#file-list").insertAdjacentHTML("afterbegin", fileHtml(result))); e.target.reset(); }); };
+
+  // ── File library upload ────────────────────────────────────────────────────
+  $("#file-form").onsubmit = e => {
+    e.preventDefault();
+    uploadWithStatus(`/api/groups/${id}/files`, e.target, $("#group-upload-status"), results => {
+      const list = $("#file-list");
+      const empty = list.querySelector(".empty-state");
+      if (empty) empty.remove();
+      results.forEach(r => list.insertAdjacentHTML("afterbegin", fileHtml(r)));
+      e.target.reset();
+    });
+  };
+
+  // ── Socket.IO ─────────────────────────────────────────────────────────────
   await connectSocket();
   const joinGroup = () => state.socket.emit("group:join", id);
   if (state.socket.connected) joinGroup(); else state.socket.once("connect", joinGroup);
+
+  state.socket.on("group:task", task => {
+    const list = $("#task-list"); if (!list) return;
+    const empty = list.querySelector(".empty-state"); if (empty) empty.remove();
+    if (!list.querySelector(`[data-task-id="${task.id}"]`)) list.insertAdjacentHTML("afterbegin", taskItemHtml(task));
+  });
+  state.socket.on("group:task:update", task => {
+    if (!task) return;
+    const el = room.querySelector(`[data-task-id="${task.id}"]`);
+    if (el) { const tmp = document.createElement("div"); tmp.innerHTML = taskItemHtml(task); el.replaceWith(tmp.firstElementChild); }
+  });
+  state.socket.on("group:task:delete", ({ id: taskId }) => { room.querySelector(`[data-task-id="${taskId}"]`)?.remove(); });
 }
 
-const messageHtml = m => `<div class="chat-message"><b>${esc(m.name)}</b><small>${fmtDate(m.created_at)}</small>${m.body ? `<p>${esc(m.body)}</p>` : ""}${m.file_stored_name ? `<a class="chat-attachment" href="${m.file_url || `/uploads/${encodeURIComponent(m.file_stored_name)}`}" target="_blank" rel="noopener">${esc(m.file_name)} · ${Math.ceil((m.file_size || 0) / 1024)} KB</a>${String(m.file_mime || "").startsWith("image/") ? `<img src="${m.file_url || `/uploads/${encodeURIComponent(m.file_stored_name)}`}" alt="${esc(m.file_name)}">` : ""}${String(m.file_mime || "").startsWith("video/") ? `<video controls src="${m.file_url || `/uploads/${encodeURIComponent(m.file_stored_name)}`}"></video>` : ""}` : ""}</div>`;
-const fileHtml = f => `<div class="member"><a href="${f.url || `/uploads/${encodeURIComponent(f.stored_name)}`}" target="_blank">${esc(f.original_name)}</a><small>${Math.ceil(f.size/1024)} KB</small><button class="danger-text" data-delete-group-file="${f.id}">Delete</button></div>`;
+// Rich message renderer — supports image, video, audio, PDF, any file
+const messageHtml = m => {
+  const mime = String(m.file_mime || "");
+  const fileUrl = m.file_url || (m.file_stored_name ? `/uploads/${encodeURIComponent(m.file_stored_name)}` : null);
+  let attachment = "";
+  if (fileUrl && m.file_name) {
+    const size = m.file_size ? `${Math.ceil(m.file_size / 1024)} KB` : "";
+    if (mime.startsWith("image/")) {
+      attachment = `<a href="${fileUrl}" target="_blank" rel="noopener"><img class="chat-img" src="${fileUrl}" alt="${esc(m.file_name)}" loading="lazy"></a>`;
+    } else if (mime.startsWith("video/")) {
+      attachment = `<video class="chat-video" controls preload="metadata" src="${fileUrl}"></video><small class="chat-file-label">${esc(m.file_name)} · ${size}</small>`;
+    } else if (mime.startsWith("audio/")) {
+      attachment = `<audio class="chat-audio" controls src="${fileUrl}"></audio><small class="chat-file-label">${esc(m.file_name)} · ${size}</small>`;
+    } else if (mime === "application/pdf") {
+      attachment = `<a class="chat-attachment pdf" href="${fileUrl}" target="_blank" rel="noopener">📄 ${esc(m.file_name)} · ${size}</a>`;
+    } else {
+      attachment = `<a class="chat-attachment" href="${fileUrl}" target="_blank" rel="noopener">📎 ${esc(m.file_name)} · ${size}</a>`;
+    }
+  }
+  return `<div class="chat-message" data-msg-id="${m.id}">
+    <div class="chat-meta"><b>${esc(m.name || "Member")}</b><small>${fmtDate(m.created_at)}</small></div>
+    ${m.body ? `<p class="chat-body">${esc(m.body)}</p>` : ""}
+    ${attachment}
+  </div>`;
+};
+
+const fileHtml = f => `<div class="file-row">
+  <div><a href="${f.url || `/uploads/${encodeURIComponent(f.stored_name)}`}" target="_blank" rel="noopener">${esc(f.original_name)}</a><small class="muted tiny">${Math.ceil(f.size / 1024)} KB · ${esc(f.folder || "General")}</small></div>
+  <button class="danger-text" data-delete-group-file="${f.id}">×</button>
+</div>`;
 
 async function connectSocket() {
   if (state.socket?.connected) return state.socket;
@@ -483,7 +729,13 @@ async function connectSocket() {
   const socket = state.socket || io({ autoConnect:false });
   state.socket = socket;
   socket.auth = { token:token.token, sessionId:token.sessionId };
-  socket.on("chat:message", m => { if (state.group && m.group_id === state.group.group.id) $("#chat-messages").insertAdjacentHTML("beforeend", messageHtml(m)); });
+  socket.on("chat:message", m => {
+    if (!state.group || String(m.group_id) !== String(state.group.group.id)) return;
+    const chatEl = $("#chat-messages");
+    if (!chatEl || chatEl.querySelector(`[data-msg-id="${m.id}"]`)) return; // already rendered
+    chatEl.insertAdjacentHTML("beforeend", messageHtml(m));
+    chatEl.scrollTop = chatEl.scrollHeight;
+  });
   socket.on("connect_error", e => toast(`Chat connection failed: ${e.message}`, true));
   socket.connectingPromise = new Promise((resolve, reject) => {
     const connected = () => { cleanup(); resolve(socket); };

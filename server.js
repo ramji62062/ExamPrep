@@ -467,13 +467,22 @@ app.get("/api/analytics", auth, async (req, res) => {
 app.get("/api/groups", auth, async (req, res) => {
   const groups = await select("groups", { order: { column: "created_at", ascending: false } });
   const memberships = await select("group_members", { eq: { user_id: req.user.id } });
-  groups.forEach(g => { g.joined = memberships.some(m => String(m.group_id) === String(g.id)); });
+  // Join member counts + owner names
+  const allMembers = groups.length ? (await supabase.from("group_members").select("group_id").then(r => r.data || [])) : [];
+  const ownerIds = [...new Set(groups.map(g => g.owner_id).filter(Boolean))];
+  const ownerRows = ownerIds.length ? (await supabase.from("users").select("id,name").in("id", ownerIds).then(r => r.data || [])) : [];
+  groups.forEach(g => {
+    g.joined = memberships.some(m => String(m.group_id) === String(g.id));
+    g.member_count = allMembers.filter(m => String(m.group_id) === String(g.id)).length;
+    g.owner_name = ownerRows.find(u => u.id === g.owner_id)?.name || "Unknown";
+  });
   res.json(groups);
 });
 app.post("/api/groups", auth, async (req, res) => {
   if (!req.body.name) return res.status(400).json({ error: "Group name is required" });
   const g = await insert("groups", { name: req.body.name, description: req.body.description || "", owner_id: req.user.id, invite_code: Math.random().toString(36).slice(2, 10).toUpperCase() });
   await insert("group_members", { group_id: g.id, user_id: req.user.id, role: "admin" });
+  g.member_count = 1; g.owner_name = req.user.name; g.joined = true;
   res.json(g);
 });
 app.post("/api/groups/join-by-code", auth, async (req, res) => {
@@ -489,14 +498,58 @@ app.delete("/api/groups/:id", auth, async (req, res) => {
   if (!g) return res.status(403).json({ error: "Only the group owner can delete it" });
   await remove("groups", { id: g.id }); res.json({ ok: true });
 });
+
+// Helper: enrich a message row with sender name and attached file info
+async function enrichMessage(m) {
+  if (!m) return m;
+  const sender = await one("users", { eq: { id: m.user_id } });
+  m.name = sender?.name || "Member";
+  if (m.file_id) {
+    const f = await one("files", { eq: { id: m.file_id } });
+    if (f) { m.file_name = f.display_name || f.original_name; m.file_stored_name = f.stored_name; m.file_mime = f.mime; m.file_size = f.size; m.file_url = fileUrl(f); }
+  }
+  return m;
+}
+// Batch-enrich messages efficiently (one user-lookup, one file-lookup)
+async function enrichMessages(messages) {
+  if (!messages.length) return messages;
+  const userIds = [...new Set(messages.map(m => m.user_id).filter(Boolean))];
+  const fileIds = [...new Set(messages.map(m => m.file_id).filter(Boolean))];
+  const [users, files] = await Promise.all([
+    userIds.length ? supabase.from("users").select("id,name").in("id", userIds).then(r => r.data || []) : [],
+    fileIds.length ? supabase.from("files").select("*").in("id", fileIds).then(r => r.data || []) : [],
+  ]);
+  return messages.map(m => {
+    m.name = users.find(u => u.id === m.user_id)?.name || "Member";
+    if (m.file_id) {
+      const f = files.find(x => x.id === m.file_id);
+      if (f) { m.file_name = f.display_name || f.original_name; m.file_stored_name = f.stored_name; m.file_mime = f.mime; m.file_size = f.size; m.file_url = fileUrl(f); }
+    }
+    return m;
+  });
+}
+
 app.get("/api/groups/:id", auth, member, async (req, res) => {
   const group = await one("groups", { eq: { id: req.params.id } });
-  const members = await select("group_members", { eq: { group_id: req.params.id } });
-  const messages = await select("messages", { eq: { group_id: req.params.id }, order: { column: "created_at" }, limit: 100 });
+  // Members with names
+  const rawMembers = await select("group_members", { eq: { group_id: req.params.id } });
+  const memberUserIds = [...new Set(rawMembers.map(m => m.user_id).filter(Boolean))];
+  const memberUsers = memberUserIds.length ? (await supabase.from("users").select("id,name,email").in("id", memberUserIds).then(r => r.data || [])) : [];
+  const members = rawMembers.map(m => ({ ...m, name: memberUsers.find(u => u.id === m.user_id)?.name || "Member", email: memberUsers.find(u => u.id === m.user_id)?.email || "" }));
+  // Messages with sender names + file details (last 100)
+  const rawMessages = await select("messages", { eq: { group_id: req.params.id }, order: { column: "created_at" }, limit: 100 });
+  const messages = await enrichMessages(rawMessages);
+  // Shared files
   const files = await select("files", { eq: { group_id: req.params.id }, order: { column: "created_at", ascending: false } });
   files.forEach(f => f.url = fileUrl(f));
-  res.json({ group, members, messages, files, role: req.groupRole });
+  // Group tasks
+  const rawTasks = await supabase.from("group_tasks").select("*").eq("group_id", req.params.id).order("created_at", { ascending: false }).then(r => r.data || []).catch(() => []);
+  const taskUserIds = [...new Set([...rawTasks.map(t => t.assigned_to), ...rawTasks.map(t => t.created_by)].filter(Boolean))];
+  const taskUsers = taskUserIds.length ? (await supabase.from("users").select("id,name").in("id", taskUserIds).then(r => r.data || [])) : [];
+  const tasks = rawTasks.map(t => ({ ...t, assigned_name: taskUsers.find(u => u.id === t.assigned_to)?.name || null, created_name: taskUsers.find(u => u.id === t.created_by)?.name || "Admin" }));
+  res.json({ group, members, messages, files, tasks, role: req.groupRole });
 });
+
 app.post("/api/groups/:id/files", auth, member, parseUpload, async (req, res) => {
   const files = req.files?.filter(x => x.fieldname === "file") || [];
   if (!files.length) return res.status(400).json({ error: "Choose at least one file" });
@@ -509,15 +562,54 @@ app.post("/api/groups/:id/files/metadata", auth, member, async (req, res) => {
   const row = await insert("files", { group_id: req.params.id, user_id: req.user.id, folder: file.folder || "General", original_name: file.original_name, stored_name: file.storage_path, storage_path: file.storage_path, storage_bucket: file.storage_bucket, mime: file.mime || "application/octet-stream", size: Number(file.size) || 0 });
   row.url = fileUrl(row); res.json(row);
 });
-app.post("/api/groups/:id/messages", auth, member, parseUpload, async (req, res) => {
-  const f = req.files?.find(x => x.fieldname === "file");
+
+// Post a message — supports text + optional file_id (R2 upload already done client-side)
+app.post("/api/groups/:id/messages", auth, member, async (req, res) => {
   const body = String(req.body.body || "").trim().slice(0, 2000);
-  if (!body && !f) return res.status(400).json({ error: "Write a message or attach a file" });
-  let file_id = null;
-  if (f) file_id = (await insert("files", fileRecord(f, { group_id: req.params.id, user_id: req.user.id, folder: "Chat" }))).id;
-  const m = await insert("messages", { group_id: req.params.id, user_id: req.user.id, body, file_id });
-  io.to(`group:${req.params.id}`).emit("chat:message", m); res.json(m);
+  const file_id = req.body.file_id ? Number(req.body.file_id) : null;
+  if (!body && !file_id) return res.status(400).json({ error: "Write a message or attach a file" });
+  const m = await insert("messages", { group_id: req.params.id, user_id: req.user.id, body: body || "", file_id });
+  const enriched = await enrichMessage(m);
+  io.to(`group:${req.params.id}`).emit("chat:message", enriched);
+  res.json(enriched);
 });
+
+// Group task routes (admin assigns work to members)
+app.get("/api/groups/:id/tasks", auth, member, async (req, res) => {
+  const rawTasks = await supabase.from("group_tasks").select("*").eq("group_id", req.params.id).order("created_at", { ascending: false }).then(r => r.data || []);
+  const userIds = [...new Set([...rawTasks.map(t => t.assigned_to), ...rawTasks.map(t => t.created_by)].filter(Boolean))];
+  const users = userIds.length ? (await supabase.from("users").select("id,name").in("id", userIds).then(r => r.data || [])) : [];
+  const tasks = rawTasks.map(t => ({ ...t, assigned_name: users.find(u => u.id === t.assigned_to)?.name || null, created_name: users.find(u => u.id === t.created_by)?.name || "Admin" }));
+  res.json(tasks);
+});
+app.post("/api/groups/:id/tasks", auth, member, async (req, res) => {
+  if (req.groupRole !== "admin") return res.status(403).json({ error: "Only group admins can create tasks" });
+  if (!req.body.title?.trim()) return res.status(400).json({ error: "Task title is required" });
+  const task = await insert("group_tasks", { group_id: req.params.id, created_by: req.user.id, assigned_to: req.body.assigned_to || null, title: req.body.title.trim(), description: req.body.description || "", due_date: req.body.due_date || null, done: false });
+  const users = task.assigned_to ? (await supabase.from("users").select("id,name").eq("id", task.assigned_to).then(r => r.data || [])) : [];
+  task.assigned_name = users[0]?.name || null; task.created_name = req.user.name;
+  io.to(`group:${req.params.id}`).emit("group:task", task);
+  res.json(task);
+});
+app.patch("/api/groups/:id/tasks/:taskId", auth, member, async (req, res) => {
+  if (req.groupRole !== "admin") return res.status(403).json({ error: "Only group admins can update tasks" });
+  const fields = {};
+  if (req.body.done !== undefined) fields.done = !!req.body.done;
+  if (req.body.title) fields.title = req.body.title.trim();
+  if (req.body.description !== undefined) fields.description = req.body.description;
+  if (req.body.due_date !== undefined) fields.due_date = req.body.due_date || null;
+  if (req.body.assigned_to !== undefined) fields.assigned_to = req.body.assigned_to || null;
+  const task = await update("group_tasks", fields, { id: req.params.taskId, group_id: req.params.id });
+  io.to(`group:${req.params.id}`).emit("group:task:update", task);
+  res.json(task || { ok: true });
+});
+app.delete("/api/groups/:id/tasks/:taskId", auth, member, async (req, res) => {
+  if (req.groupRole !== "admin") return res.status(403).json({ error: "Only group admins can delete tasks" });
+  await remove("group_tasks", { id: req.params.taskId, group_id: req.params.id });
+  io.to(`group:${req.params.id}`).emit("group:task:delete", { id: req.params.taskId });
+  res.json({ ok: true });
+});
+
 app.delete("/api/groups/:id/members/:userId", auth, member, async (req, res) => {
   if (req.groupRole !== "admin") return res.status(403).json({ error: "Group admin required" });
   await remove("group_members", { group_id: req.params.id, user_id: req.params.userId }); res.json({ ok: true });
