@@ -13,6 +13,7 @@ if (!hasSupabaseConfig) console.error("Missing Supabase server configuration. Se
 const supabase = createClient(url || "https://missing-project.supabase.co", serviceKey || "missing-supabase-key", { auth: { persistSession: false, autoRefreshToken: false } });
 const app = express(); const server = http.createServer(app); const io = new Server(server);
 const PORT = process.env.PORT || 3000;
+const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const personalBucket = process.env.SUPABASE_PERSONAL_BUCKET || "personal-files";
 const groupBucket = process.env.SUPABASE_GROUP_BUCKET || "group-files";
 const fallbackBucket = process.env.SUPABASE_STORAGE_BUCKET || "uploads";
@@ -34,8 +35,12 @@ function fileUrl(file) { if (!file) return null; const bucket = file.storage_buc
 async function removeStorageFile(file) { if (file?.storage_bucket && (file.storage_path || file.stored_name)) { const { error } = await supabase.storage.from(file.storage_bucket).remove([file.storage_path || file.stored_name]); if (error) throw error; } }
 async function parseUpload(req, res, next) { upload.any()(req, res, async e => { if (e) return res.status(400).json({ error: e.message }); if ((req.files || []).length > 50) return res.status(400).json({ error: "You can upload up to 50 files at a time" }); try { const isGroup = req.params.id && req.path.includes("/groups/"); const bucket = isGroup ? groupBucket : personalBucket; const owner = isGroup ? `groups/${req.params.id}` : `users/${req.user.id}`; await Promise.all((req.files || []).map(async (f, index) => { const stored = await storageUpload(bucket, `${owner}/${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${path.extname(f.originalname)}`, f); f.storage_bucket = stored.bucket; f.storage_path = stored.path; f.filename = stored.path; })); next(); } catch (err) { res.status(502).json({ error: `Storage upload failed: ${err.message}` }); } }); }
 const fileRecord = (f, extra = {}) => ({ ...extra, original_name: f.originalname, stored_name: f.storage_path, storage_path: f.storage_path, storage_bucket: f.storage_bucket, mime: f.mimetype, size: f.size });
+for (const method of ["get", "post", "put", "patch", "delete"]) {
+  const register = app[method].bind(app);
+  app[method] = (route, ...handlers) => register(route, ...handlers.map(handler => handler.length < 4 ? asyncRoute(handler) : handler));
+}
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
-app.get("/api/config", (_req, res) => res.json({ supabaseUrl: url, supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, redirectUrl: process.env.NEXT_PUBLIC_SUPABASE_REDIRECT_URL || "/" }));
+app.get("/api/config", (req, res) => res.json({ supabaseUrl: url, supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, redirectUrl: process.env.NEXT_PUBLIC_SUPABASE_REDIRECT_URL || `${req.protocol}://${req.get("host")}/` }));
 app.post("/api/auth/register", async (req, res) => { const { name, email, password } = req.body; if (!name || !email || !password || password.length < 6) return res.status(400).json({ error: "Name, email and a 6+ character password are required" }); const { data, error } = await supabase.auth.admin.createUser({ email: email.toLowerCase(), password, email_confirm: true, user_metadata: { name } }); if (error) return res.status(400).json({ error: error.message }); const login = await supabase.auth.signInWithPassword({ email, password }); if (login.error) return res.status(400).json({ error: login.error.message }); res.json({ user: await profile(data.user), token: login.data.session.access_token }); });
 app.post("/api/auth/login", async (req, res) => { const { data, error } = await supabase.auth.signInWithPassword({ email: String(req.body.email || "").toLowerCase(), password: req.body.password || "" }); if (error || !data.user) return res.status(401).json({ error: error?.message || "Invalid email or password" }); res.json({ user: await profile(data.user), token: data.session.access_token }); });
 app.post("/api/auth/logout", (_req, res) => res.json({ ok: true })); app.get("/api/me", auth, (req, res) => res.json({ user: req.user })); app.get("/api/socket-token", auth, (req, res) => res.json({ token: req.headers.authorization.slice(7) }));
@@ -79,4 +84,9 @@ app.patch("/api/admin/users/:id", auth, admin, async (req, res) => { await updat
 io.use(async (socket, next) => { const token = socket.handshake.auth?.token; const { data, error } = token ? await supabase.auth.getUser(token) : {}; if (error || !data?.user) return next(new Error("Authentication required")); try { socket.user = await profile(data.user); next(); } catch (_) { next(new Error("Authentication required")); } });
 io.on("connection", socket => { const joined = new Set(); socket.on("group:join", async id => { if (await one("group_members", { eq: { group_id: id, user_id: socket.user.id } })) { socket.join(`group:${id}`); joined.add(String(id)); } }); socket.on("group:leave", id => { socket.leave(`group:${id}`); joined.delete(String(id)); }); socket.on("chat:message", async ({ groupId, body }, ack) => { if (!joined.has(String(groupId))) return ack?.("Join the group chat first"); const m = await insert("messages", { group_id: groupId, user_id: socket.user.id, body: String(body || "").slice(0, 2000) }); io.to(`group:${groupId}`).emit("chat:message", m); ack?.(); }); });
 app.get("*", (req, res, next) => req.path.startsWith("/api/") ? res.status(404).json({ error: "Not found" }) : res.sendFile(path.join(__dirname, "public", "index.html"), next));
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  console.error("Request failed:", error);
+  res.status(500).json({ error: "The server could not complete that request. Please try again." });
+});
 server.listen(PORT, () => console.log(`Exam Prep Tracker running at http://localhost:${PORT}`));
